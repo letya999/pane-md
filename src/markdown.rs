@@ -52,6 +52,7 @@ pub struct Region {
     pub level: u8,
     pub indent: usize,
     pub quote: bool,
+    pub mermaid: bool,
 }
 
 impl Region {
@@ -488,6 +489,12 @@ impl Builder<'_> {
             ThematicBreak => self.doc.layout.push(Layout::Rule),
             CodeBlock(code) => {
                 let mut region = self.region(node, owner, kind, indent, quoted);
+                region.mermaid = code.fenced
+                    && code
+                        .info
+                        .split_ascii_whitespace()
+                        .next()
+                        .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"));
                 let style = Style {
                     code: true,
                     ..Style::default()

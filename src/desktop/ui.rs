@@ -36,7 +36,7 @@ use windows::{
 
 use super::{
     Result,
-    file::{Document, markdown_path},
+    file::{Document, Viewport, markdown_path},
     rich::*,
 };
 
@@ -81,6 +81,7 @@ const FIND_PREV: usize = 138;
 const CLOSE_FIND: usize = 139;
 const PARAGRAPH: usize = 140;
 const LINE_BREAK: usize = 141;
+const SHOW_SOURCE: usize = 142;
 const MODES: usize = 150;
 const RESULTS: usize = 170;
 const FORMAT: usize = 171;
@@ -372,15 +373,17 @@ struct App {
     active: Option<usize>,
     parsed: Markdown,
     view: Projection,
+    diagrams: Diagrams,
     projection_safe: bool,
     tree_open: bool,
     review_open: bool,
     find_open: bool,
+    find_headings: bool,
     tree_entries: Vec<TreeEntry>,
     review_indices: Vec<usize>,
     active_review: Option<String>,
     draft: Option<Draft>,
-    history: Vec<(PathBuf, usize)>,
+    history: Vec<(PathBuf, Viewport)>,
     zoom: i32,
     zoom_status: HWND,
     workspace: Option<PathBuf>,
@@ -514,10 +517,12 @@ impl App {
                 active: None,
                 parsed: Markdown::default(),
                 view: Projection::default(),
+                diagrams: Diagrams::default(),
                 projection_safe: true,
                 tree_open: false,
                 review_open: false,
                 find_open: false,
+                find_headings: false,
                 tree_entries: Vec::new(),
                 review_indices: Vec::new(),
                 active_review: None,
@@ -562,7 +567,7 @@ impl App {
                 if header.hwndFrom == self.tab && header.code == TCN_SELCHANGE {
                     let index = send(self.tab, TCM_GETCURSEL, 0, 0);
                     if index >= 0 {
-                        self.switch(index as usize, None);
+                        self.switch(index as usize);
                     }
                 }
                 if header.hwndFrom == self.tree {
@@ -620,9 +625,9 @@ impl App {
             }
             WM_SETTINGCHANGE | WM_THEMECHANGED => {
                 self.sync();
-                let position = self.current_position(false);
+                self.store_position();
                 self.theme();
-                self.refresh(position);
+                self.refresh_viewport();
                 Some(0)
             }
             WM_DROPFILES => {

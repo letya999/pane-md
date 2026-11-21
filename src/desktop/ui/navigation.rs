@@ -1,14 +1,25 @@
 use super::*;
 
 impl App {
-    pub(super) fn show_find(&mut self) {
+    pub(super) fn show_find(&mut self, headings: bool) {
         if self.active.is_none() {
             return;
         }
+        if headings != self.find_headings {
+            set_text(self.find_box, "");
+        }
+        self.find_headings = headings;
+        let hint = wide(if headings {
+            "Найти заголовок"
+        } else {
+            "Найти в документе"
+        });
+        send(self.find_box, EM_SETCUEBANNER, 1, hint.as_ptr() as isize);
         self.find_open = true;
         self.layout();
         let span = selection(self.editor);
-        if !span.is_empty()
+        if !headings
+            && !span.is_empty()
             && span.len() < 512
             && let Some(units) = self.view.text.get(span)
             && let Ok(text) = String::from_utf16(units)
@@ -24,6 +35,38 @@ impl App {
 
     pub(super) fn find(&self, backwards: bool) {
         let query = get_text(self.find_box).to_lowercase();
+        if self.find_headings {
+            let current = self.current_position();
+            // Source editing leaves the rendered snapshot alone while typing.
+            let current_markdown = self
+                .active
+                .filter(|_| self.mode() == 3)
+                .map(|index| Markdown::parse(&self.docs[index].text));
+            let mut matching = current_markdown
+                .as_ref()
+                .unwrap_or(&self.parsed)
+                .regions
+                .iter()
+                .filter(|region| region.level > 0 && region.text.to_lowercase().contains(&query));
+            let found = if backwards {
+                matching
+                    .clone()
+                    .rfind(|region| region.source.start < current)
+                    .or_else(|| matching.next_back())
+            } else {
+                matching
+                    .clone()
+                    .find(|region| region.source.start > current)
+                    .or_else(|| matching.next())
+            };
+            if let Some(region) = found {
+                self.jump_source(region.source.start);
+                self.status(None);
+            } else {
+                self.status(Some("Заголовков не найдено"));
+            }
+            return;
+        }
         if query.is_empty() {
             return;
         }
@@ -112,7 +155,7 @@ impl App {
         let fragment = decode_url(fragment)?;
         let index = self.active.ok_or("Сначала откройте документ")?;
         let from = self.docs[index].path.clone();
-        let position = self.current_position(true);
+        let position = self.capture_viewport();
         if !file.is_empty() {
             let local = PathBuf::from(decode_url(file)?);
             if local.has_root() || !markdown_path(&local) {
@@ -152,41 +195,7 @@ impl App {
     pub(super) fn back(&mut self) {
         if let Some((path, position)) = self.history.pop() {
             if self.open(path, 0).is_ok() {
-                self.jump_source(position);
-            }
-        }
-    }
-
-    pub(super) fn headings(&mut self) {
-        let choices = self
-            .parsed
-            .regions
-            .iter()
-            .filter(|r| r.level > 0)
-            .map(|r| {
-                (
-                    r.source.start,
-                    format!(
-                        "{}{}",
-                        "  ".repeat((r.level - 1) as usize),
-                        r.text.replace('&', "&&")
-                    ),
-                )
-            })
-            .collect::<Vec<_>>();
-        if choices.is_empty() {
-            self.status(Some("В документе нет заголовков"));
-            return;
-        }
-        let items = choices
-            .iter()
-            .enumerate()
-            .map(|(i, (_, text))| (i + 1, text.as_str()))
-            .collect::<Vec<_>>();
-        if let Some(index) = self.popup_choice(self.hwnd, &items, None) {
-            self.jump_source(choices[index - 1].0);
-            unsafe {
-                let _ = SetFocus(Some(self.editor));
+                self.restore_viewport(&position);
             }
         }
     }
@@ -211,6 +220,7 @@ impl App {
             items.extend([
                 (ADD_REVIEW, "Добавить комментарий"),
                 (OPEN_LINK, "Открыть ссылку"),
+                (SHOW_SOURCE, "Показать в исходнике"),
             ]);
         }
         match self.popup_choice(self.editor, &items, location) {
@@ -343,7 +353,8 @@ pub(super) fn menu_bar() -> Result<HMENU> {
             &[
                 (TREE, "Панель папки"),
                 (REVIEWS, "Панель комментариев"),
-                (HEADINGS, "Заголовки…"),
+                (HEADINGS, "Найти заголовок…"),
+                (SHOW_SOURCE, "Показать в исходнике"),
                 (BACK, "Назад по ссылке\tAlt+←"),
                 (ZOOM_IN, "Увеличить\tCtrl++"),
                 (ZOOM_OUT, "Уменьшить\tCtrl+-"),

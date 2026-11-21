@@ -214,6 +214,9 @@ impl App {
             return None;
         }
         let (index, local) = self.view.region_range(selection(self.editor))?;
+        if self.view.diagram_regions.contains(&index) {
+            return None;
+        }
         review::capture(&self.parsed, index, local)
     }
 
@@ -343,7 +346,7 @@ impl App {
             (None, None) => return,
         };
         self.active_review = Some(patch.2);
-        let position = self.current_position(false);
+        let position = self.current_position();
         self.patch(patch.0, &patch.1, position);
         self.review_select(true);
         self.status(Some("Комментарий в буфере. Ctrl+S сохраняет файл."));
@@ -355,7 +358,7 @@ impl App {
         };
         let range = record.source.clone();
         let mut updated = record.review.clone();
-        let position = self.current_position(false);
+        let position = self.current_position();
         if command == DELETE_REVIEW {
             let answer = unsafe {
                 MessageBoxW(
@@ -402,6 +405,10 @@ impl App {
         let Some((region, local)) = self.view.region_range(selected) else {
             return;
         };
+        if self.view.diagram_regions.contains(&region) {
+            self.status(Some("Диаграмму Mermaid можно изменить в MD Source Edit."));
+            return;
+        }
         let region = &self.parsed.regions[region];
         let i = self.active.expect("editor document");
         let source = &self.docs[i].text;

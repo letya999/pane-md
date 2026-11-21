@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt::Write, ops::Range, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write,
+    ops::Range,
+    path::Path,
+};
 
 use notepad_md::{
     markdown::{Layout, Markdown, Region, Run, Style},
@@ -9,7 +14,9 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HWND, LPARAM, POINT, RECT, WPARAM},
         UI::{
-            Controls::{EM_CHARFROMPOS, EM_POSFROMCHAR, EM_SCROLLCARET, EM_SETRECT, RichEdit::*},
+            Controls::{
+                EM_CHARFROMPOS, EM_GETRECT, EM_POSFROMCHAR, EM_SCROLLCARET, EM_SETRECT, RichEdit::*,
+            },
             WindowsAndMessaging::*,
         },
     },
@@ -77,6 +84,12 @@ pub fn char_point(hwnd: HWND, at: usize) -> POINT {
         at as isize,
     );
     point
+}
+
+pub fn text_rect(hwnd: HWND) -> RECT {
+    let mut rect = RECT::default();
+    send(hwnd, EM_GETRECT, 0, &mut rect as *mut _ as isize);
+    rect
 }
 
 pub fn buffer(hwnd: HWND) -> Vec<u16> {
@@ -231,6 +244,8 @@ pub struct Projection {
     pub region: Vec<Range<usize>>,
     pub links: Vec<(Range<usize>, String)>,
     pub source: Vec<Option<usize>>,
+    pub diagram_regions: HashSet<usize>,
+    pub diagram_fallbacks: usize,
 }
 
 impl Projection {
@@ -297,18 +312,44 @@ impl Projection {
                 .or_else(|| self.source.get(at.saturating_sub(1)).copied().flatten())
                 .unwrap_or_default();
         }
-        let i = self.region.partition_point(|span| span.end <= at);
+        let i = self.region.partition_point(|span| span.end < at);
         if let Some((span, r)) = self.region.get(i).zip(doc.regions.get(i)) {
+            if self.diagram_regions.contains(&i) {
+                return if at == span.end {
+                    r.source.end
+                } else {
+                    r.source.start
+                };
+            }
             let index = self.semantic_at(i, at.saturating_sub(span.start));
-            let source = r
-                .runs
-                .iter()
-                .flat_map(|run| &run.units)
+            let mut units = r.runs.iter().flat_map(|run| &run.units);
+            if at == span.end && index != 0 {
+                return units
+                    .rev()
+                    .find_map(|unit| unit.as_ref())
+                    .map_or(r.source.end, |range| range.end);
+            }
+            return units
                 .nth(index)
-                .and_then(Option::as_ref);
-            return source.map_or(r.source.start, |range| range.start);
+                .and_then(Option::as_ref)
+                .map_or(r.source.start, |range| range.start);
         }
         doc.regions.last().map_or(0, |r| r.source.end)
+    }
+
+    pub fn source_selection(&self, doc: &Markdown, range: Range<usize>) -> Range<usize> {
+        if !range.is_empty()
+            && let Some((region, local)) = self.region_range(range.clone())
+        {
+            if self.diagram_regions.contains(&region) {
+                return doc.regions[region].source.clone();
+            }
+            if let Some(source) = doc.regions[region].source_selection(local) {
+                return source;
+            }
+        }
+        let start = self.source_at(doc, range.start);
+        start..self.source_at(doc, range.end).max(start)
     }
 
     pub fn visible_at(&self, doc: &Markdown, byte: usize) -> usize {
@@ -321,6 +362,13 @@ impl Projection {
         }
         let index = doc.regions.partition_point(|r| r.source.end < byte);
         if let Some((span, r)) = self.region.get(index).zip(doc.regions.get(index)) {
+            if self.diagram_regions.contains(&index) {
+                return if byte == r.source.end {
+                    span.end
+                } else {
+                    span.start
+                };
+            }
             let offset = r
                 .runs
                 .iter()
@@ -341,7 +389,9 @@ impl Projection {
 
 mod image;
 mod live;
-pub(super) use live::{fit_new_paragraph, fit_trimmed_spaces};
+mod mermaid;
+pub(super) use live::{apply_plain_edit, fit_new_paragraph, fit_trimmed_spaces};
+pub(super) use mermaid::Diagrams;
 pub fn source_rtf(text: &[u16], palette: Palette) -> String {
     let mut rtf = palette.rtf();
     rtf.push_str(r"\pard\f1\fs23\cf1 ");
@@ -359,6 +409,8 @@ pub fn render(
     palette: Palette,
     prose_width: i32,
     directory: &Path,
+    diagrams: &mut Diagrams,
+    dark: bool,
 ) -> (String, Projection) {
     let mut rtf = palette.rtf();
     let mut view = Projection {
@@ -388,6 +440,11 @@ pub fn render(
         match block {
             Layout::Text(index) => {
                 let region = &doc.regions[*index];
+                let picture = region
+                    .mermaid
+                    .then(|| diagrams.picture(&region.text, dark))
+                    .flatten();
+                view.diagram_fallbacks += usize::from(region.mermaid && picture.is_none());
                 let size = match region.level {
                     0 => 25,
                     1 => 46,
@@ -411,8 +468,16 @@ pub fn render(
                 if region.quote {
                     rtf.push_str(r"\brdrl\brdrs\brdrw20\brdrcf5\brsp95\cf7 ");
                 }
-                if region.kind == "code" || region.kind == "html" {
+                if picture.is_none() && matches!(region.kind, "code" | "html") {
                     rtf.push_str(r"\f1\fs22\shading10000\cbpat6\li220\ri220 ");
+                }
+                if let Some(picture) = picture {
+                    let start = view.text.len();
+                    rtf.push_str(picture);
+                    view.text.push(0xfffc);
+                    view.region[*index] = start..view.text.len();
+                    view.diagram_regions.insert(*index);
+                    continue;
                 }
                 render_region(
                     &mut rtf,

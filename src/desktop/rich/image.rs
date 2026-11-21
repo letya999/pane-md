@@ -22,7 +22,18 @@ pub(super) fn embed(rtf: &mut String, directory: &Path, raw: &str) -> bool {
     let Some((data, width, height, kind)) = load(directory, raw) else {
         return false;
     };
-    let goal_width = (width * 15).min(8_700);
+    write_rtf(rtf, &data, width, height, kind, (width * 15).min(8_700));
+    true
+}
+
+pub(super) fn write_rtf(
+    rtf: &mut String,
+    data: &[u8],
+    width: u32,
+    height: u32,
+    kind: &str,
+    goal_width: u32,
+) {
     let goal_height = (height * goal_width / width).max(15);
     let _ = writeln!(
         rtf,
@@ -35,7 +46,6 @@ pub(super) fn embed(rtf: &mut String, directory: &Path, raw: &str) -> bool {
         rtf.push('\n');
     }
     rtf.push('}');
-    true
 }
 
 fn load(directory: &Path, raw: &str) -> Option<(Vec<u8>, u32, u32, &'static str)> {

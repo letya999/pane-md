@@ -11,7 +11,7 @@ impl App {
             return Ok(());
         }
         if let Some(index) = self.docs.iter().position(|doc| doc.path == path) {
-            self.switch(index, None);
+            self.switch(index);
             return Ok(());
         }
         if self.wait && self.active.is_some() {
@@ -171,54 +171,74 @@ impl App {
         }
     }
 
-    fn store_position(&mut self) {
+    pub(super) fn store_position(&mut self) {
         self.sync();
-        let position = self.current_position(true);
         if let Some(i) = self.active {
-            self.docs[i].position = position;
+            self.docs[i].viewport = self.capture_viewport();
+            let family = self.mode() % 2;
+            self.docs[i].horizontal_scroll[family] = scroll_pos(self.editor).x;
         }
     }
 
-    pub(super) fn current_position(&self, viewport: bool) -> usize {
-        let selected = selection(self.editor).start;
-        let position = if viewport {
-            let point = char_point(self.editor, selected);
-            let mut bounds = RECT::default();
-            unsafe {
-                let _ = GetClientRect(self.editor, &mut bounds);
-            }
-            if point.y >= 0 && point.y < bounds.bottom {
-                selected
-            } else {
-                hit(
-                    self.editor,
-                    POINT {
-                        x: self.dip(36),
-                        y: self.dip(12),
-                    },
-                )
-                .unwrap_or(selected)
-            }
-        } else {
-            selected
+    pub(super) fn current_position(&self) -> usize {
+        self.view
+            .source_at(&self.parsed, selection(self.editor).start)
+    }
+
+    pub(super) fn capture_viewport(&self) -> Viewport {
+        let rect = text_rect(self.editor);
+        let p = POINT {
+            x: rect.left + 1,
+            y: rect.top + 1,
         };
-        self.view.source_at(&self.parsed, position)
+        let at = hit(self.editor, p).unwrap_or(0).min(self.view.text.len());
+        Viewport {
+            selection: self
+                .view
+                .source_selection(&self.parsed, selection(self.editor)),
+            top: self.view.source_at(&self.parsed, at),
+            line_y: char_point(self.editor, at).y - rect.top,
+        }
     }
 
-    pub(super) fn switch(&mut self, index: usize, position: Option<usize>) {
-        if index >= self.docs.len() {
-            return;
-        }
-        if self.active == Some(index) {
-            if let Some(position) = position {
-                self.jump_source(position);
-            }
+    pub(super) fn restore_viewport(&self, viewport: &Viewport) {
+        let start = self.view.visible_at(&self.parsed, viewport.selection.start);
+        let end = self.view.visible_at(&self.parsed, viewport.selection.end);
+        select(self.editor, start..end.max(start), false);
+        let top = self.view.visible_at(&self.parsed, viewport.top);
+        // EM_GETSCROLLPOS can truncate the vertical coordinate on long documents.
+        set_scroll(self.editor, POINT::default());
+        let y = char_point(self.editor, top).y;
+        let rect = text_rect(self.editor);
+        let x = self
+            .active
+            .map_or(0, |i| self.docs[i].horizontal_scroll[self.mode() % 2]);
+        set_scroll(
+            self.editor,
+            POINT {
+                x,
+                y: (y - rect.top - viewport.line_y).max(0),
+            },
+        );
+        self.place_review_card();
+    }
+
+    pub(super) fn refresh_viewport(&mut self) {
+        let viewport = self
+            .active
+            .map_or_else(Viewport::default, |i| self.docs[i].viewport.clone());
+        self.refresh(0);
+        self.restore_viewport(&viewport);
+    }
+
+    pub(super) fn switch(&mut self, index: usize) {
+        if index >= self.docs.len() || self.active == Some(index) {
             return;
         }
         self.store_position();
         self.active = Some(index);
         self.reset_review();
-        self.refresh(position.unwrap_or(self.docs[index].position));
+        self.refresh_viewport();
     }
 
     fn reset_review(&mut self) {
@@ -259,7 +279,7 @@ impl App {
         self.status(None);
     }
 
-    fn render_data(&self) -> (String, Projection) {
+    fn render_data(&mut self) -> (String, Projection) {
         let Some(i) = self.active else {
             return (self.palette.rtf() + "}", Projection::default());
         };
@@ -272,6 +292,8 @@ impl App {
                 self.palette,
                 10_800,
                 self.docs[i].path.parent().unwrap_or(Path::new(".")),
+                &mut self.diagrams,
+                self.dark,
             )
         }
     }
@@ -323,7 +345,13 @@ impl App {
             let warnings = self.parsed.diagnostics.len();
             let path = doc.path.to_string_lossy();
             let path = path.strip_prefix(r"\\?\").unwrap_or(&path);
-            let text = format!("{}    {path}", MODES_TEXT[doc.mode]);
+            let mut text = format!("{}    {path}", MODES_TEXT[doc.mode]);
+            if self.view.diagram_fallbacks != 0 {
+                text.push_str(&format!(
+                    "    Mermaid исходником: {}",
+                    self.view.diagram_fallbacks
+                ));
+            }
             if warnings > 0 {
                 format!("{text}    Повреждённых записей ревью: {warnings}")
             } else {
@@ -376,23 +404,27 @@ impl App {
             let inserted = after
                 .get(new)
                 .and_then(|units| String::from_utf16(units).ok());
-            self.view
-                .region_range(old)
-                .zip(inserted)
-                .and_then(|((region, selection), inserted)| {
-                    if inserted
-                        .chars()
-                        .any(|ch| matches!(ch, '\u{fff9}'..='\u{fffc}' | '\u{0007}' | '\0'))
+            self.view.region_range(old.clone()).zip(inserted).and_then(
+                |((region, selection), inserted)| {
+                    if self.view.diagram_regions.contains(&region)
+                        || inserted
+                            .chars()
+                            .any(|ch| matches!(ch, '\u{fff9}'..='\u{fffc}' | '\u{0007}' | '\0'))
                     {
                         return None;
                     }
                     self.parsed.regions[region].patch(source, selection, &inserted)
-                })
+                },
+            )
         };
         if let Some((range, text)) = patch {
             let position = range.start + text.len();
+            let live_edit = self.mode() == 2
+                && apply_plain_edit(&mut self.parsed, &mut self.view, source, old, &range, &text);
             self.docs[i].patch(range, &text, true);
-            if self.mode() == 3 {
+            if live_edit {
+                self.view.text = after;
+            } else if self.mode() == 3 {
                 self.view = Projection::source(&self.docs[i].text);
                 if self.view.text != after {
                     self.rebuild_editor(position);
@@ -510,7 +542,7 @@ impl App {
         send(self.tab, TCM_DELETEITEM, i, 0);
         self.active = (!self.docs.is_empty()).then_some(i.min(self.docs.len().saturating_sub(1)));
         self.reset_review();
-        self.refresh(self.active.map_or(0, |index| self.docs[index].position));
+        self.refresh_viewport();
     }
 
     pub(super) fn error(&self, title: &str, error: &dyn std::fmt::Display) {
@@ -572,7 +604,7 @@ impl App {
     pub(super) fn command(&mut self, command: usize) {
         self.sync();
         if self.draft.is_some()
-            && matches!(command, ADD_REVIEW | EDIT_REVIEW | REATTACH | DELETE_REVIEW | RESOLVE_REVIEW | UNDO | REDO | BOLD..=COL_DELETE | MODES..=153)
+            && matches!(command, ADD_REVIEW | EDIT_REVIEW | REATTACH | DELETE_REVIEW | RESOLVE_REVIEW | UNDO | REDO | BOLD..=COL_DELETE | SHOW_SOURCE | MODES..=153)
         {
             self.status(Some("Примените черновик или отмените его."));
             return;
@@ -593,7 +625,7 @@ impl App {
             SAVE_AS if !self.wait => self.save_as(),
             CLOSE => self.close_tab(),
             BACK => self.back(),
-            FIND => self.show_find(),
+            FIND | HEADINGS => self.show_find(command == HEADINGS),
             FIND_NEXT | FIND_PREV => self.find(command == FIND_PREV),
             CLOSE_FIND => {
                 self.find_open = false;
@@ -633,20 +665,44 @@ impl App {
                 }
             }
             THEME => {
-                let position = self.current_position(true);
+                self.store_position();
                 self.use_system = !self.use_system;
                 self.theme();
-                self.refresh(position);
+                self.refresh_viewport();
             }
-            MODES..=153 if self.active.is_some() => {
-                let target = command - MODES;
+            MODES..=153 | SHOW_SOURCE if self.active.is_some() => {
+                let target = if command == SHOW_SOURCE {
+                    self.mode() | 1
+                } else {
+                    command - MODES
+                };
+                let show_selection = command == SHOW_SOURCE;
+                let mut leaving = None;
                 if self.mode() != target {
-                    let pos = self.current_position(true);
-                    self.docs[self.active.expect("document selected")].mode = target;
-                    self.refresh(pos);
+                    self.store_position();
+                    let document = &mut self.docs[self.active.expect("document selected")];
+                    if document.mode % 2 != target % 2 {
+                        let position = document.viewport.clone();
+                        if let Some((expected, previous)) = document.mode_round_trip.take()
+                            && expected == position
+                        {
+                            document.viewport = previous;
+                        }
+                        leaving = Some(position);
+                    }
+                    document.mode = target;
+                    self.refresh_viewport();
+                }
+                if show_selection {
+                    send(self.editor, EM_SCROLLCARET, 0, 0);
                 }
                 unsafe {
                     let _ = SetFocus(Some(self.editor));
+                }
+                if let Some(position) = leaving {
+                    let arrival = self.capture_viewport();
+                    self.docs[self.active.expect("document selected")].mode_round_trip =
+                        Some((arrival, position));
                 }
             }
             ADD_REVIEW => self.start_review(false, false),
@@ -677,7 +733,6 @@ impl App {
                 send(self.editor, EM_REPLACESEL, 0, text.as_ptr() as isize);
                 self.sync();
             }
-            HEADINGS => self.headings(),
             FORMAT | TABLE_TOOLS => {
                 if let Some((button, _)) = self
                     .toolbar
@@ -749,7 +804,7 @@ impl App {
                     } else {
                         self.docs.len() - 1
                     };
-                    self.switch((i + step) % self.docs.len(), None);
+                    self.switch((i + step) % self.docs.len());
                 }
             }
             204 => self.popup(

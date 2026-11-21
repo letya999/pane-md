@@ -13,6 +13,7 @@ import time
 PARSER = argparse.ArgumentParser(description=__doc__)
 PARSER.add_argument("exe", type=Path)
 PARSER.add_argument("fixture", type=Path)
+PARSER.add_argument("--typing", action="store_true", help="measure WYSIWYG input on a temporary copy")
 args = PARSER.parse_args()
 exe = str(args.exe.resolve(strict=True))
 fixture = args.fixture.resolve(strict=True)
@@ -31,6 +32,9 @@ USER.SendMessageW.restype = w.LPARAM
 USER.FindWindowExW.argtypes = [w.HWND, w.HWND, w.LPCWSTR, w.LPCWSTR]
 USER.FindWindowExW.restype = w.HWND
 USER.GetWindowLongW.argtypes = [w.HWND, c.c_int]
+USER.UpdateWindow.argtypes = [w.HWND]
+USER.ShowWindow.argtypes = [w.HWND, c.c_int]
+USER.SetWindowPos.argtypes = [w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT]
 KERNEL.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
 KERNEL.OpenProcess.restype = w.HANDLE
 KERNEL.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
@@ -228,14 +232,49 @@ def check_wait(folder):
         assert process.wait(timeout=5) == 0
         assert path.read_bytes() == replacement.encode("utf-8")
 
-with tempfile.TemporaryDirectory(prefix="notepad-md-smoke-") as directory:
-    check_mcp(Path(directory))
-    check_wait(Path(directory))
+def measure_typing(directory):
+    marker = b"Typing probex"
+    path = directory / "Typing benchmark.md"
+    original = marker + b"\n\n" + fixture.read_bytes()
+    path.write_bytes(original)
+    subprocess.run([exe, str(path)], check=True, timeout=5)
+    hwnd, pid = wait_window(f"{path.name} — notepad-md")
+    try:
+        # Keep the benchmark from receiving keyboard input from the interactive desktop.
+        USER.ShowWindow(hwnd, 0)
+        assert USER.SetWindowPos(hwnd, None, -20_000, -20_000, 0, 0, 0x0015)
+        USER.ShowWindow(hwnd, 4)
+        editor = USER.FindWindowExW(hwnd, None, "RICHEDIT50W", None)
+        assert editor
+        command(hwnd, 152)  # WYSIWYG Edit
+        USER.SendMessageW(editor, 0x00B1, len(marker), len(marker))
+        samples = []
+        for trial in range(50):
+            started = time.perf_counter_ns()
+            USER.SendMessageW(editor, 0x0102, ord("a"), 1)
+            command(hwnd, 0)  # Synchronize the edit without writing the file.
+            USER.UpdateWindow(editor)
+            if trial >= 10:
+                samples.append((time.perf_counter_ns() - started) / 1_000_000)
+        command(hwnd, 103)
+        assert path.read_bytes() == marker + b"a" * 50 + original[len(marker):]
+        p95 = sorted(samples)[37]
+        print(f"WYSIWYG, {len(original)} bytes, n={len(samples)}: p50={statistics.median(samples):.2f} ms, p95={p95:.2f} ms")
+    finally:
+        close_window(hwnd, pid)
 
-before = fixture.read_bytes()
-for label, target in [("empty", None), ("large", fixture)]:
-    observations = [measure(target) for _ in range(3)]
-    print(label, "samples (ms, MiB):", observations,
-          "medians:", tuple(statistics.median(column) for column in zip(*observations)))
-assert fixture.read_bytes() == before
-print("MCP and CLI lifecycle checks passed; EXE bytes:", Path(exe).stat().st_size)
+with tempfile.TemporaryDirectory(prefix="notepad-md-smoke-") as directory:
+    if args.typing:
+        measure_typing(Path(directory))
+    else:
+        check_mcp(Path(directory))
+        check_wait(Path(directory))
+
+if not args.typing:
+    before = fixture.read_bytes()
+    for label, target in [("empty", None), ("large", fixture)]:
+        observations = [measure(target) for _ in range(3)]
+        print(label, "samples (ms, MiB):", observations,
+              "medians:", tuple(statistics.median(column) for column in zip(*observations)))
+    assert fixture.read_bytes() == before
+    print("MCP and CLI lifecycle checks passed; EXE bytes:", Path(exe).stat().st_size)

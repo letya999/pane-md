@@ -194,6 +194,133 @@ fn rich_edit_native_round_trip() -> Result<()> {
         send(app.editor, WM_CHAR, 'A' as usize, 1);
         app.sync();
         assert_eq!(app.docs[app.active.unwrap()].text, "Hello world\n\nA");
+
+        let navigation = files.path().join("Навигация.md");
+        let wide = "Очень широкая колонка для проверки".repeat(4);
+        let original = format!(
+            "# Начало\n\n{}\n## Проверка таблицы\n\n| {wide} | {wide} | {wide} | {wide} | {wide} |\n| --- | --- | --- | --- | --- |\n| Ж😀 | А | Б | В | **Ж😀** |\n\n{}",
+            "Обычный абзац перед таблицей\n\n".repeat(60),
+            "Обычный абзац после таблицы\n\n".repeat(35)
+        );
+        fs::write(&navigation, &original)?;
+        app.open(navigation, 2)?;
+        let table_tab = app.active.unwrap();
+        let quote = "Ж😀".encode_utf16().collect::<Vec<_>>();
+        let position = buffer(app.editor)
+            .windows(quote.len())
+            .rposition(|window| window == quote)
+            .unwrap();
+        let selected = position..position + quote.len();
+        select(app.editor, selected.clone(), true);
+        let bottom = scroll_pos(app.editor).y;
+        set_scroll(app.editor, POINT { x: 110, y: bottom });
+        let before = scroll_pos(app.editor);
+        assert!(before.x > 0);
+        let saved_y = char_point(app.editor, selected.start).y;
+        app.command(SHOW_SOURCE);
+        assert_eq!(app.mode(), 3);
+        assert_eq!(
+            String::from_utf16_lossy(&buffer(app.editor)[selection(app.editor)]),
+            "Ж😀"
+        );
+        assert_eq!(app.current_position(), original.rfind("Ж😀").unwrap());
+        app.command(MODES + 2);
+        assert_eq!(selection(app.editor), selected);
+        assert_eq!(scroll_pos(app.editor).x, before.x);
+        let returned_y = char_point(app.editor, selected.start).y;
+        assert!(
+            (returned_y - saved_y).abs() < 50,
+            "vertical position changed: {saved_y} => {returned_y}"
+        );
+        app.switch(1);
+        app.switch(table_tab);
+        assert_eq!(selection(app.editor), selected);
+        assert_eq!(scroll_pos(app.editor).x, before.x);
+        app.command(HEADINGS);
+        set_text(app.find_box, "ТАБЛИЦЫ");
+        app.command(FIND_NEXT);
+        assert_eq!(
+            app.current_position(),
+            original.find("Проверка таблицы").unwrap()
+        );
+
+        let fast = files.path().join("Typing and ranges.md");
+        let original =
+            "До таблицы\n\n| A | B |\n| --- | --- |\n| x | P85 |\n\n[link](#tail)\n\n# Tail\n";
+        fs::write(&fast, original)?;
+        app.open(fast, 2)?;
+        let pos = index(&buffer(app.editor), "До таблицы").end;
+        select(app.editor, pos..pos, false);
+        send(app.editor, WM_CHAR, 'Ж' as usize, 1);
+        app.sync();
+        let table = index(&buffer(app.editor), "P85");
+        assert_eq!(
+            app.view.source_selection(&app.parsed, table),
+            original.find("P85").unwrap() + 2..original.find("P85").unwrap() + 5
+        );
+        type_selection(&mut app, "P85", "P90");
+        assert_eq!(
+            app.view.link(index(&buffer(app.editor), "link").start),
+            Some("#tail")
+        );
+        assert_eq!(
+            app.docs[app.active.unwrap()].text,
+            original
+                .replace("До таблицы", "До таблицыЖ")
+                .replace("P85", "P90")
+        );
+        assert!(app.jump_anchor("tail"));
+        assert_eq!(
+            app.current_position(),
+            app.docs[app.active.unwrap()].text.find("Tail").unwrap()
+        );
+        app.command(MODES + 3);
+        type_selection(&mut app, "Tail", "Свежий заголовок");
+        app.command(HEADINGS);
+        set_text(app.find_box, "СВЕЖИЙ");
+        app.command(FIND_NEXT);
+        assert_eq!(
+            app.current_position(),
+            app.docs[app.active.unwrap()].text.find("# Свежий").unwrap()
+        );
+
+        let path = files.path().join("Mermaid и таблица.md");
+        let original = "\u{feff}# Диаграммы\r\n\r\n\
+```mermaid\r\nflowchart LR\r\n A[Запрос] --> B[Ответ]\r\n```\r\n\r\n\
+| A | B |\r\n| --- | --- |\r\n| 1 | 2 |\r\n\r\n\
+~~~Mermaid\r\nsequenceDiagram\r\n Client->>Server: Проверка\r\n~~~\r\n\r\n\
+```mermaid\r\nunsupportedDiagram\r\n```\r\n";
+        fs::write(&path, original)?;
+        app.open(path.clone(), 0)?;
+        assert!(app.projection_safe);
+        assert_eq!(app.view.diagram_regions.len(), 2);
+        assert_eq!(app.view.diagram_fallbacks, 1);
+        let native = buffer(app.editor);
+        assert_eq!(native.iter().filter(|&&unit| unit == 0xfffc).count(), 2);
+        assert!(native.contains(&7)); // Native RichEdit table cell boundary.
+        assert!(String::from_utf16_lossy(&native).contains("unsupportedDiagram"));
+        assert!(!String::from_utf16_lossy(&native).contains("flowchart LR"));
+
+        let region = *app.view.diagram_regions.iter().min().unwrap();
+        let diagram = app.view.region[region].clone();
+        select(app.editor, diagram.clone(), false);
+        assert!(app.capture_selection().is_none());
+        app.command(SHOW_SOURCE);
+        let source = String::from_utf16_lossy(&buffer(app.editor)[selection(app.editor)]);
+        assert_eq!(
+            source,
+            "```mermaid\rflowchart LR\r A[Запрос] --> B[Ответ]\r```"
+        );
+
+        app.command(MODES + 2);
+        select(app.editor, diagram, false);
+        send(app.editor, WM_CHAR, 'X' as usize, 1);
+        app.sync();
+        assert_eq!(buffer(app.editor), native);
+        assert_eq!(fs::read(&path)?, original.as_bytes());
+        app.command(THEME);
+        assert!(app.projection_safe);
+        assert_eq!(app.view.diagram_regions.len(), 2);
         DestroyWindow(parent)?;
         CoUninitialize();
         Ok(())

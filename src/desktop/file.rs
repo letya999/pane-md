@@ -22,8 +22,17 @@ pub struct Document {
     saved: Vec<u8>,
     undo: Vec<Change>,
     redo: Vec<Change>,
-    pub position: usize,
+    pub viewport: Viewport,
+    pub mode_round_trip: Option<(Viewport, Viewport)>,
+    pub horizontal_scroll: [i32; 2],
     pub mode: usize,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Viewport {
+    pub selection: Bytes,
+    pub top: usize,
+    pub line_y: i32,
 }
 
 struct Change {
@@ -61,7 +70,9 @@ impl Document {
             mode,
             undo: Vec::new(),
             redo: Vec::new(),
-            position: 0,
+            viewport: Viewport::default(),
+            mode_round_trip: None,
+            horizontal_scroll: [0; 2],
         })
     }
 
@@ -79,6 +90,7 @@ impl Document {
         if before == replacement {
             return;
         }
+        self.mode_round_trip = None;
         let start = range.start;
         let mut merged = false;
         if coalesce
@@ -111,6 +123,7 @@ impl Document {
             (&mut self.undo, &mut self.redo)
         };
         let change = from.pop()?;
+        self.mode_round_trip = None;
         let (old, new) = if redo {
             (&change.before, &change.after)
         } else {
