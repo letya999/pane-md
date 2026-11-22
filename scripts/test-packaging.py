@@ -6,7 +6,7 @@ from runpy import run_path
 import tempfile
 import unittest
 
-from release_files import ROOT, license_files
+from release_files import ROOT, license_files, release_files
 
 release_notes = run_path(str(ROOT / "scripts" / "release-notes.py"))["release_notes"]
 
@@ -15,10 +15,10 @@ class PackagingTests(unittest.TestCase):
     def test_release_notes_select_one_version_and_require_changes(self):
         changelog = (ROOT / "docs/CHANGELOG.md").read_text(encoding="utf-8")
         first = release_notes("v0.1.0", changelog)
-        latest = release_notes("v0.1.2", changelog)
+        latest = release_notes("v0.1.3", changelog)
         self.assertIn("STDIO MCP server", first)
         self.assertNotIn("Windows Explorer version details", first)
-        self.assertIn("Default apps", latest)
+        self.assertIn("one real Windows screenshot", latest)
         self.assertNotIn("Windows Explorer version details", latest)
         with self.assertRaises(ValueError):
             release_notes("v9.9.9", changelog)
@@ -60,6 +60,12 @@ class PackagingTests(unittest.TestCase):
                 })],
                 ["LICENSES/LICENSE-MIT", "ELK-PROVENANCE.md"],
             )
+
+    def test_release_has_every_local_readme_image_and_example(self):
+        _, version, files, _ = release_files(["x86_64-unknown-linux-gnu"])
+        self.assertEqual(version, "0.1.3")
+        for name in ("assets/pane-md.png", "docs/media/pane-md-demo.png", "examples/demo.md"):
+            self.assertTrue(files[name].is_file(), name)
 
 
 if __name__ == "__main__":

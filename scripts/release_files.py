@@ -31,6 +31,9 @@ def release_files(targets):
         "README.md": ROOT / "README.md",
         "README.ru.md": ROOT / "README.ru.md",
         "docs/guide.ru.md": ROOT / "docs" / "guide.ru.md",
+        "docs/media/pane-md-demo.png": ROOT / "docs" / "media" / "pane-md-demo.png",
+        "examples/demo.md": ROOT / "examples" / "demo.md",
+        "assets/pane-md.png": ROOT / "assets" / "pane-md.png",
         "LICENSE": ROOT / "LICENSE",
         "Cargo.lock": ROOT / "Cargo.lock",
     }

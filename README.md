@@ -2,7 +2,7 @@
 
 # pane-md
 
-**A local Markdown editor for writing, reading, and reviewing documents.** It keeps comments in the Markdown file, so a person and an agent can work on the same document without a separate review service.
+**A local Markdown editor with a CLI and STDIO MCP server** for writing, reading, and reviewing documents. It keeps comments in the Markdown file, so a person and an agent can work on the same document without a separate review service.
 
 [Русский](README.ru.md) · [Detailed Russian guide](docs/guide.ru.md) · [Releases](https://github.com/letya999/pane-md/releases)
 
@@ -10,11 +10,9 @@
 
 ## See it in action
 
-<p align="center"><img src="docs/media/tour.gif" width="960" alt="Animated tour: WYSIWYG with outline and review cards, Markdown source, and editing a comment"></p>
+<p align="center"><a href="docs/media/pane-md-demo.png"><img src="docs/media/pane-md-demo.png" width="100%" alt="pane-md on Windows: document tabs, outline, Markdown links, task list, table, and three anchored review comments"></a></p>
 
-<p align="center"><a href="docs/media/01-wysiwyg.png"><img src="docs/media/01-wysiwyg.png" width="30%" alt="WYSIWYG with outline and comments"></a> <a href="docs/media/02-source.png"><img src="docs/media/02-source.png" width="30%" alt="Markdown source and comments"></a> <a href="docs/media/03-comment-edit.png"><img src="docs/media/03-comment-edit.png" width="30%" alt="Editing a review comment in Markdown source mode"></a></p>
-
-These are screenshots of the Windows app using the included [review demo](examples/review-demo.md). Select a thumbnail for the full-size image. The animated image cycles through the three views.
+This is a real Windows capture of the included [Markdown example](examples/demo.md). It shows heading navigation, links to sections, a local guide and GitHub, a task list, a table, and three comments stored in the file. Select the screenshot for full size.
 
 ## What it does
 
