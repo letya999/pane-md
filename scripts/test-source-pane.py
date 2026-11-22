@@ -160,9 +160,11 @@ def main():
 <script src="{escape((ROOT / 'source-pane.js').as_uri())}"></script>
 <script>{SCENARIO}</script>""", encoding="utf-8")
         run = subprocess.run(
-            [chromium, "--headless", "--disable-gpu", f"--user-data-dir={profile}", "--dump-dom", fixture.as_uri()],
-            capture_output=True, encoding="utf-8", errors="replace", check=True, timeout=90,
+            [chromium, "--headless", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage", f"--user-data-dir={profile}", "--dump-dom", fixture.as_uri()],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=90,
         )
+        if run.returncode:
+            raise SystemExit(f"Chromium exited {run.returncode}: {run.stderr[-3000:]}")
         result = re.search(r'<output id="result">(.*?)</output>', run.stdout, re.DOTALL)
         if not result or not result[1]:
             raise SystemExit("The Chromium fixture did not finish running.")

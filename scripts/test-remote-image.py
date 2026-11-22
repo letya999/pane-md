@@ -78,9 +78,11 @@ window.addEventListener('load', () => {{
     try:
         with tempfile.TemporaryDirectory(prefix="pane-image-test-") as profile:
             run = subprocess.run(
-                [chrome, "--headless", "--disable-gpu", f"--user-data-dir={profile}", "--virtual-time-budget=2500", "--dump-dom", f"http://127.0.0.1:{port}/"],
-                capture_output=True, encoding="utf-8", errors="replace", check=True, timeout=30,
+                [chrome, "--headless", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage", f"--user-data-dir={profile}", "--virtual-time-budget=2500", "--dump-dom", f"http://127.0.0.1:{port}/"],
+                capture_output=True, encoding="utf-8", errors="replace", timeout=30,
             )
+            if run.returncode:
+                raise SystemExit(f"Chromium exited {run.returncode}: {run.stderr[-3000:]}")
         match = re.search(r'<output id="result">(.*?)</output>', run.stdout, re.DOTALL)
         if not match:
             raise SystemExit("Browser component test did not return a result.")
