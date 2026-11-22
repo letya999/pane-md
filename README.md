@@ -30,7 +30,7 @@ The Windows editor uses native RichEdit. Linux and macOS use the system WebView.
 
 ## Download and run
 
-Download the latest archive from [Releases](https://github.com/letya999/pane-md/releases). The Windows archive contains a portable `pane-md.exe` with an Explorer icon and version details; no installer or file association is required. Linux requires GTK 3, WebKitGTK 4.1, and an X11 or Wayland session. Its archive includes a `.desktop` launcher and icon for optional local installation. The macOS archive contains a universal `.app` with an ad hoc signature; it is not Developer ID signed or notarized.
+Download the latest archive from [Releases](https://github.com/letya999/pane-md/releases). On Windows, `pane-md.exe` also runs directly from the extracted archive. To add pane-md to the Start menu, **Open with**, and **Default apps**, extract the archive and run `powershell -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1`. The script copies both executables to `%LOCALAPPDATA%\Programs\pane-md` and registers `.md`, `.markdown`, `.mdown`, and `.mkd` for the current user. To make it the default for `.md`, select **pane-md** in Windows **Settings → Apps → Default apps**; installation does not replace your current choice. Linux requires GTK 3, WebKitGTK 4.1, and an X11 or Wayland session. Its archive includes a `.desktop` launcher and icon for optional local installation. The macOS archive contains a universal `.app` with an ad hoc signature; it is not Developer ID signed or notarized.
 
 On Linux, you can run `./pane-md` from the extracted archive. To add it to your application menu, ensure `~/.local/bin` is on your graphical session's `PATH`, then run:
 
