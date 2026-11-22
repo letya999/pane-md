@@ -2,6 +2,12 @@
 
 This file records user-visible changes in released versions.
 
+## 0.1.3 — 2026-11-23
+
+- Added a navigable Markdown example with a task list, table, links, Mermaid diagram, and three anchored comments.
+- Replaced the README gallery with one real Windows screenshot and made CLI and MCP visible in both READMEs.
+- Included the example, screenshot, and README icon in release archives.
+
 ## 0.1.2 — 2026-11-22
 
 - Unified the app icon as a large MD mark across the README and desktop bundles.

@@ -2,7 +2,7 @@
 
 # pane-md
 
-**Локальный редактор Markdown для чтения, правки и ревью документов.** Комментарии хранятся в самом Markdown-файле: человек и агент работают с одним документом без отдельного сервиса обсуждений.
+**Локальный редактор Markdown с CLI и MCP-сервером по STDIO** для чтения, правки и ревью документов. Комментарии хранятся в самом Markdown-файле: человек и агент работают с одним документом без отдельного сервиса обсуждений.
 
 [English](README.md) · [Подробное руководство](docs/guide.ru.md) · [Сборки](https://github.com/letya999/pane-md/releases)
 
@@ -10,11 +10,9 @@
 
 ## Как выглядит приложение
 
-<p align="center"><img src="docs/media/tour.gif" width="960" alt="Смена трёх видов: WYSIWYG с оглавлением и комментариями, исходный Markdown и редактирование комментария"></p>
+<p align="center"><a href="docs/media/pane-md-demo.png"><img src="docs/media/pane-md-demo.png" width="100%" alt="pane-md в Windows: вкладки, оглавление, ссылки Markdown, список задач, таблица и три привязанных комментария"></a></p>
 
-<p align="center"><a href="docs/media/01-wysiwyg.png"><img src="docs/media/01-wysiwyg.png" width="30%" alt="WYSIWYG с оглавлением и комментариями"></a> <a href="docs/media/02-source.png"><img src="docs/media/02-source.png" width="30%" alt="Исходный Markdown с комментариями"></a> <a href="docs/media/03-comment-edit.png"><img src="docs/media/03-comment-edit.png" width="30%" alt="Редактирование комментария в исходном Markdown"></a></p>
-
-Это реальные кадры Windows-приложения с [демонстрационным документом](examples/review-demo.md). Нажмите на миниатюру, чтобы открыть полный размер. GIF по очереди показывает все три состояния.
+Это реальный снимок Windows-приложения с [примером Markdown](examples/demo.md). На нём видны навигация по заголовкам, ссылки на разделы, локальное руководство и GitHub, список задач, таблица и три комментария, сохранённые в файле. Нажмите на скриншот для полного размера.
 
 ## Возможности
 
