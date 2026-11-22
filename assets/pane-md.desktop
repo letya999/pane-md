@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=pane-md
+GenericName=Markdown Editor
+GenericName[ru]=Редактор Markdown
+Comment=Markdown editor with in-file review comments
+Comment[ru]=Редактор Markdown с комментариями внутри документа
+Keywords=markdown;review;notes;
+Keywords[ru]=markdown;комментарии;заметки;
+Exec=pane-md %f
+TryExec=pane-md
+Icon=pane-md
+Terminal=false
+Categories=Office;TextEditor;
+MimeType=text/markdown;text/x-markdown;

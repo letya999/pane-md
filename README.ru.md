@@ -22,7 +22,15 @@
 
 ## Скачать и запустить
 
-Когда выйдет релиз, скачайте архив на странице [Сборки](https://github.com/letya999/pane-md/releases). Windows-архив содержит переносимый `pane-md.exe`; установщик и ассоциация файлов не нужны. В Linux требуются GTK 3, WebKitGTK 4.1 и сеанс X11 или Wayland. Архив macOS содержит универсальное `.app` с локальной подписью ad hoc; подписи Developer ID и нотариализации пока нет.
+Скачайте свежий архив на странице [Сборки](https://github.com/letya999/pane-md/releases). Windows-архив содержит переносимый `pane-md.exe` с иконкой и сведениями о версии в Проводнике; установщик и ассоциация файлов не нужны. В Linux требуются GTK 3, WebKitGTK 4.1 и сеанс X11 или Wayland. В архиве есть значок и файл `.desktop` для добавления в меню приложений. Архив macOS содержит универсальное `.app` с локальной подписью ad hoc; подписи Developer ID и нотариализации пока нет.
+
+В Linux можно запустить `./pane-md` прямо из распакованного архива. Чтобы добавить приложение в меню, убедитесь, что `~/.local/bin` входит в `PATH` графического сеанса, затем выполните:
+
+```sh
+install -Dm755 pane-md "$HOME/.local/bin/pane-md"
+install -Dm644 pane-md.desktop "$HOME/.local/share/applications/pane-md.desktop"
+install -Dm644 pane-md.png "$HOME/.local/share/icons/hicolor/1024x1024/apps/pane-md.png"
+```
 
 Откройте документ или папку:
 

@@ -1,9 +1,9 @@
 [package]
 name = "pane-md"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.95"
-description = "Local Markdown editor for writing, reading, and in-file review"
+description = "Cross-platform Markdown editor with WYSIWYG, in-file review, CLI and MCP"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/letya999/pane-md"

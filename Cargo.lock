@@ -1984,33 +1984,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
-name = "pane-md"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "comrak",
- "embed-resource",
- "gtk",
- "html-escape",
- "imagesize",
- "merman",
- "png",
- "regex",
- "resvg",
- "rfd",
- "rmcp",
- "serde",
- "serde_json",
- "tao",
- "tempfile",
- "tokio",
- "ureq",
- "uuid",
- "windows",
- "wry",
-]
-
-[[package]]
 name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2302,6 +2275,33 @@ name = "palette_math"
 version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e6eb142958d64335fb0e345c5b9ead2ecd6fc438c307e9d7d3c4fd428dbaf12"
+
+[[package]]
+name = "pane-md"
+version = "0.1.1"
+dependencies = [
+ "base64 0.23.1",
+ "comrak",
+ "embed-resource",
+ "gtk",
+ "html-escape",
+ "imagesize",
+ "merman",
+ "png",
+ "regex",
+ "resvg",
+ "rfd",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tao",
+ "tempfile",
+ "tokio",
+ "ureq",
+ "uuid",
+ "windows",
+ "wry",
+]
 
 [[package]]
 name = "pango"

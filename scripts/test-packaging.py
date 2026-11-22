@@ -21,6 +21,7 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(resources, app / "Contents" / "Resources")
             self.assertEqual(info["CFBundleExecutable"], "pane-md")
             self.assertEqual(info["CFBundleIconFile"], "pane-md.icns")
+            self.assertEqual(info["NSHumanReadableCopyright"], "Copyright (c) 2026 Artem Letyushev")
             self.assertEqual(info["LSMinimumSystemVersion"], package["MINIMUM_MACOS"])
             document, = info["CFBundleDocumentTypes"]
             declaration, = info["UTImportedTypeDeclarations"]

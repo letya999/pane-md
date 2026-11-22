@@ -2,6 +2,11 @@
 
 This file records user-visible changes in released versions.
 
+## 0.1.1 — 2026-11-22
+
+- Added Windows Explorer version details and a Linux application menu launcher.
+- Expanded repository and bundle descriptions for the public release.
+
 ## 0.1.0 — 2026-11-22
 
 - First public source release of pane-md, with Windows, Linux, and macOS build workflows.

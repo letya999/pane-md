@@ -30,6 +30,7 @@ def info(version):
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundleVersion": version,
         "CFBundleShortVersionString": version,
+        "NSHumanReadableCopyright": "Copyright (c) 2026 Artem Letyushev",
         "LSMinimumSystemVersion": MINIMUM_MACOS,
         "NSHighResolutionCapable": True,
         "CFBundleDocumentTypes": [{

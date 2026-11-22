@@ -22,7 +22,15 @@ The Windows editor uses native RichEdit. Linux and macOS use the system WebView.
 
 ## Download and run
 
-Download an archive from [Releases](https://github.com/letya999/pane-md/releases) when one is published. The Windows archive contains a portable `pane-md.exe`; no installer or file association is required. Linux requires GTK 3, WebKitGTK 4.1, and an X11 or Wayland session. The macOS archive contains a universal `.app` with an ad hoc signature; it is not Developer ID signed or notarized.
+Download the latest archive from [Releases](https://github.com/letya999/pane-md/releases). The Windows archive contains a portable `pane-md.exe` with an Explorer icon and version details; no installer or file association is required. Linux requires GTK 3, WebKitGTK 4.1, and an X11 or Wayland session. Its archive includes a `.desktop` launcher and icon for optional local installation. The macOS archive contains a universal `.app` with an ad hoc signature; it is not Developer ID signed or notarized.
+
+On Linux, you can run `./pane-md` from the extracted archive. To add it to your application menu, ensure `~/.local/bin` is on your graphical session's `PATH`, then run:
+
+```sh
+install -Dm755 pane-md "$HOME/.local/bin/pane-md"
+install -Dm644 pane-md.desktop "$HOME/.local/share/applications/pane-md.desktop"
+install -Dm644 pane-md.png "$HOME/.local/share/icons/hicolor/1024x1024/apps/pane-md.png"
+```
 
 Open a document or a folder:
 

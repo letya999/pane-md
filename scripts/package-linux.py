@@ -20,6 +20,7 @@ def main():
         raise SystemExit("The release executable must be a Linux x86-64 ELF file.")
     files[executable.name] = executable
     files["pane-md.png"] = ROOT / "assets" / "pane-md.png"
+    files["pane-md.desktop"] = ROOT / "assets" / "pane-md.desktop"
     archive = release / "pane-md-linux-x64.tar.gz"
     with tempfile.TemporaryDirectory(dir=release) as temporary:
         pending = Path(temporary) / archive.name
