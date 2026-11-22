@@ -1,8 +1,20 @@
 mod actions;
+mod appearance;
+mod atoms;
+mod cards;
+mod cells;
+mod clipboard;
+mod layout;
+mod lists;
+mod molecules;
 mod navigation;
+mod remote_images;
 mod review_panel;
+use atoms::control_button;
+use molecules::DocumentBar;
 pub(super) use navigation::decode_url;
-use navigation::{FORMAT_ITEMS, TABLE_ITEMS, menu_bar};
+use navigation::menu_bar;
+pub(super) use remote_images::RemoteImages;
 
 use std::{
     cell::RefCell,
@@ -13,9 +25,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use notepad_md::{
+use pane_md::{
     diff, edit_source,
-    markdown::{Layout, Markdown},
+    markdown::Markdown,
     review::{self, Binding, Review, Status},
 };
 use windows::{
@@ -36,8 +48,13 @@ use windows::{
 
 use super::{
     Result,
-    file::{Document, Viewport, markdown_path},
+    file::{
+        Document, FolderEntry, LinkHistory, LinkPosition, Viewport, folder_entries, markdown_path,
+    },
+    i18n::{self, Label as L, tr},
     rich::*,
+    settings,
+    theme::{EditorAppearance, Palette},
 };
 
 const OPEN: usize = 101;
@@ -75,7 +92,6 @@ const ROW_ADD: usize = 132;
 const ROW_DELETE: usize = 133;
 const COL_ADD: usize = 134;
 const COL_DELETE: usize = 135;
-const TABLE_TOOLS: usize = 136;
 const OPEN_LINK: usize = 137;
 const FIND_PREV: usize = 138;
 const CLOSE_FIND: usize = 139;
@@ -84,13 +100,63 @@ const LINE_BREAK: usize = 141;
 const SHOW_SOURCE: usize = 142;
 const MODES: usize = 150;
 const RESULTS: usize = 170;
-const FORMAT: usize = 171;
+const OUTLINE: usize = 172;
+const OUTLINE_LIST: usize = 173;
+const FAMILY: usize = 174;
+const DISPLAY: usize = 175;
+const READ: usize = 176;
+const COMMENTS: usize = 177;
+const EDITING: usize = 178;
+const VIEW_RICH: usize = 187;
+const VIEW_SOURCE: usize = 188;
+const CARD_MENU_BASE: usize = 500;
+const REVIEW_COMMIT: usize = 189;
+const REVIEW_DETAILS: usize = 190;
+const LINT_NEXT: usize = 191;
+const LINT_PREV: usize = 192;
+const MAKE_TASK: usize = 193;
+const TOGGLE_TASK: usize = 194;
+const NUMBERED_LIST: usize = 195;
+const APPEARANCE: usize = 240;
+const RICH_FONT: usize = 241;
+const SOURCE_FONT: usize = 242;
+const PAPER_COLOR: usize = 243;
+const TEXT_COLOR: usize = 244;
+const LINK_COLOR: usize = 245;
+const RESET_APPEARANCE: usize = 246;
+const INSERT_IMAGE: usize = 247;
+const SHOW_REPLACE: usize = 248;
+const REPLACE_ONE: usize = 249;
+const REPLACE_ALL: usize = 250;
+const FIND_OPTIONS: usize = 251;
+const MATCH_CASE: usize = 252;
+const WHOLE_WORD: usize = 253;
+const REFRESH_FILES: usize = 254;
+const NEW_NOTE: usize = 255;
+const FORWARD_LINK: usize = 256;
+const HEADING_FIRST: usize = 220;
+const HEADING_LAST: usize = HEADING_FIRST + 5;
+const REVIEW_ALL: usize = 181;
+const REVIEW_COLLAPSE: usize = 182;
+const THEME_LIGHT: usize = 183;
+const THEME_DARK: usize = 184;
+const LANG_RU: usize = 185;
+const LANG_EN: usize = 186;
+const COPY_SELECTION: usize = 206;
+const CUT_SELECTION: usize = 208;
+const CARD_BASE: usize = 400;
+const CARD_SLOTS: usize = 96;
 const ID_DOCUMENT: usize = 180;
 const WM_SYNC: u32 = WM_APP + 1;
 const WM_LINK: u32 = WM_APP + 2;
 const WM_DOC_SCROLL: u32 = WM_APP + 3;
 const WM_REVIEW_HIT: u32 = WM_APP + 4;
-const MODES_TEXT: [&str; 4] = ["WYSIWYG View", "MD View", "WYSIWYG Edit", "MD Source Edit"];
+const WM_SELECTION_MENU: u32 = WM_APP + 5;
+const WM_TAB_CLOSE: u32 = WM_APP + 6;
+const WM_TASK: u32 = WM_APP + 7;
+pub(super) const WM_DIAGRAM_READY: u32 = WM_APP + 8;
+const REFRESH_SIDEBARS: usize = 1;
+const SS_OWNERDRAW: WINDOW_STYLE = WINDOW_STYLE(0x0d);
 
 pub fn run(path: Option<PathBuf>, wait: bool) -> Result<()> {
     // All HWNDs, GDI handles, COM objects, and callbacks in this module live on this UI thread.
@@ -113,20 +179,35 @@ unsafe fn run_window(path: Option<PathBuf>, wait: bool) -> Result<()> {
         .ok()
         .map_err(|e| format!("InitCommonControlsEx: {e}"))?;
         let instance: HINSTANCE = GetModuleHandleW(None)?.into();
-        let class = WNDCLASSW {
+        let icon_id = PCWSTR(std::ptr::without_provenance(1));
+        let icon =
+            LoadIconW(Some(instance), icon_id).or_else(|_| LoadIconW(None, IDI_APPLICATION))?;
+        let small_icon = LoadImageW(
+            Some(instance),
+            icon_id,
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON),
+            LR_SHARED,
+        )
+        .map_or(icon, |handle| HICON(handle.0));
+        let class = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(window_proc),
+            hIcon: icon,
+            hIconSm: small_icon,
             hInstance: instance,
             hCursor: LoadCursorW(None, IDC_ARROW)?,
-            lpszClassName: w!("notepad-md.window"),
+            lpszClassName: w!("pane-md.window"),
             ..Default::default()
         };
-        if RegisterClassW(&class) == 0 {
+        if RegisterClassExW(&class) == 0 {
             return Err(windows::core::Error::from_thread().into());
         }
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class.lpszClassName,
-            w!("notepad-md"),
+            w!("pane-md"),
             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -141,11 +222,11 @@ unsafe fn run_window(path: Option<PathBuf>, wait: bool) -> Result<()> {
         if let Some(path) = path {
             if let Err(error) = app.open(path, if wait { 3 } else { 0 }) {
                 if wait {
-                    app.error("Не удалось открыть файл", &error);
+                    app.error(tr(L::FileError), &error);
                     let _ = DestroyWindow(hwnd);
                     return Err(error);
                 }
-                app.error("Не удалось открыть документ", &error);
+                app.error(tr(L::OpenError), &error);
             }
         } else {
             app.refresh(0);
@@ -174,7 +255,24 @@ unsafe fn run_window(path: Option<PathBuf>, wait: bool) -> Result<()> {
             if status == 0 {
                 break;
             }
-            if let Some(command) = shortcut(&msg, &state.borrow()) {
+            let editor = state.borrow().editor;
+            if msg.hwnd == editor && clipboard::is_paste_key(&msg) {
+                send(editor, WM_PASTE, 0, 0);
+                continue;
+            }
+            if msg.hwnd == editor
+                && msg.message == WM_KEYDOWN
+                && msg.wParam.0 == usize::from(VK_TAB.0)
+                && GetKeyState(VK_CONTROL.0.into()) >= 0
+                && GetKeyState(VK_MENU.0.into()) >= 0
+                && state
+                    .borrow_mut()
+                    .move_table_cell(GetKeyState(VK_SHIFT.0.into()) < 0)
+            {
+                continue;
+            }
+            let command = shortcut(&msg, &state.borrow());
+            if let Some(command) = command {
                 send(hwnd, WM_COMMAND, command, 0);
                 continue;
             }
@@ -187,13 +285,15 @@ unsafe fn run_window(path: Option<PathBuf>, wait: bool) -> Result<()> {
 
 unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     unsafe {
+        if let Some(result) = navigation::menu_message(hwnd, message, w, l) {
+            return result;
+        }
         let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<App>;
         if !pointer.is_null()
             && let Ok(mut app) = (*pointer).try_borrow_mut()
+            && let Some(result) = app.message(message, w, l)
         {
-            if let Some(result) = app.message(message, w, l) {
-                return LRESULT(result);
-            }
+            return LRESULT(result);
         }
         if message == WM_DESTROY {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -214,6 +314,9 @@ unsafe extern "system" fn document_proc(
 ) -> LRESULT {
     unsafe {
         let frame = HWND(parent as *mut _);
+        if let Some(result) = lists::pointer(frame, message, w, l) {
+            return result;
+        }
         if (message == WM_MOUSEMOVE && w.0 & 1 == 0) || message == WM_LBUTTONUP {
             let point = POINT {
                 x: l.0 as i16 as i32,
@@ -222,9 +325,9 @@ unsafe extern "system" fn document_proc(
             let pointer = GetWindowLongPtrW(frame, GWLP_USERDATA) as *const RefCell<App>;
             if !pointer.is_null()
                 && let Ok(app) = (*pointer).try_borrow()
-                && (app.mode() == 0 || (app.mode() == 2 && GetKeyState(VK_CONTROL.0.into()) < 0))
+                && (app.mode() == 0 || GetKeyState(VK_CONTROL.0.into()) < 0)
                 && let Some(at) = hit(hwnd, point)
-                && app.view.link(at).is_some()
+                && app.link_at(at).is_some()
             {
                 let start = char_point(hwnd, at);
                 let end = char_point(hwnd, at + 1);
@@ -264,10 +367,66 @@ unsafe extern "system" fn document_proc(
             }
         }
         if message == WM_PASTE {
-            // Pasting through RichEdit's native Unicode path prevents RTF and embedded OLE.
-            return LRESULT(send(hwnd, EM_PASTESPECIAL, 13, 0));
+            let pointer = GetWindowLongPtrW(frame, GWLP_USERDATA) as *const RefCell<App>;
+            if let Some(state) = pointer.as_ref()
+                && let Ok(mut app) = state.try_borrow_mut()
+                && app.mode() == 2
+            {
+                if let Some(text) = clipboard::clipboard_text(hwnd) {
+                    app.paste_visual(&text);
+                }
+                return LRESULT(0);
+            }
+            return LRESULT(send(
+                hwnd,
+                EM_PASTESPECIAL,
+                clipboard::UNICODE_TEXT as usize,
+                0,
+            ));
+        }
+        let edit_cell = match message {
+            WM_CHAR if w.0 == 8 => Some(0),
+            WM_CHAR if (32..=u16::MAX as usize).contains(&w.0) => Some(w.0 as u16),
+            WM_KEYDOWN if w.0 == usize::from(VK_DELETE.0) => Some(0),
+            _ => None,
+        };
+        if let Some(unit) = edit_cell
+            && let Some(state) =
+                (GetWindowLongPtrW(frame, GWLP_USERDATA) as *const RefCell<App>).as_ref()
+            && let Ok(mut app) = state.try_borrow_mut()
+            && app.edit_selected_cells(unit)
+        {
+            return LRESULT(0);
         }
         let result = DefSubclassProc(hwnd, message, w, l);
+        if message == WM_LBUTTONUP {
+            let span = selection(hwnd);
+            if !span.is_empty()
+                && char_point(hwnd, span.start).y != char_point(hwnd, span.end - 1).y
+            {
+                let mut point = POINT {
+                    x: l.0 as i16 as i32,
+                    y: (l.0 >> 16) as i16 as i32,
+                };
+                let _ = ClientToScreen(hwnd, &mut point);
+                let coordinates = (point.x as u16 as usize) | ((point.y as u16 as usize) << 16);
+                let _ = PostMessageW(
+                    Some(frame),
+                    WM_SELECTION_MENU,
+                    WPARAM(0),
+                    LPARAM(coordinates as isize),
+                );
+            }
+        }
+        if message == WM_SETTEXT {
+            // A multiline control can accept WM_SETTEXT without sending EN_CHANGE.
+            send(
+                frame,
+                WM_COMMAND,
+                ID_DOCUMENT | ((EN_CHANGE as usize) << 16),
+                hwnd.0 as isize,
+            );
+        }
         if matches!(message, WM_VSCROLL | WM_MOUSEWHEEL | WM_KEYUP) {
             let _ = PostMessageW(Some(frame), WM_DOC_SCROLL, WPARAM(0), LPARAM(0));
         }
@@ -283,8 +442,12 @@ fn shortcut(msg: &MSG, app: &App) -> Option<usize> {
     let ctrl = unsafe { GetKeyState(VK_CONTROL.0.into()) < 0 };
     let shift = unsafe { GetKeyState(VK_SHIFT.0.into()) < 0 };
     let alt = unsafe { GetKeyState(VK_MENU.0.into()) < 0 };
-    if alt && key == VK_LEFT.0 {
-        return Some(BACK);
+    if alt && !ctrl && !shift {
+        match key {
+            key if key == VK_LEFT.0 => return Some(BACK),
+            key if key == VK_RIGHT.0 => return Some(FORWARD_LINK),
+            _ => {}
+        }
     }
     if key == VK_F3.0 {
         return Some(if shift { FIND_PREV } else { FIND_NEXT });
@@ -295,11 +458,31 @@ fn shortcut(msg: &MSG, app: &App) -> Option<usize> {
     if key == VK_F6.0 {
         return Some(200);
     }
+    if key == VK_F5.0 && !ctrl && !alt && !shift && app.workspace.is_some() {
+        return Some(REFRESH_FILES);
+    }
     if key == VK_ESCAPE.0 && app.find_open {
         return Some(CLOSE_FIND);
     }
+    if key == VK_ESCAPE.0 {
+        if app.draft.is_some() {
+            return Some(REVIEW_CANCEL);
+        }
+        if app.reviews_visible() && app.review_expanded {
+            return Some(REVIEW_COLLAPSE);
+        }
+    }
+    if ctrl && key == VK_RETURN.0 && app.draft.is_some() {
+        return Some(REVIEW_SAVE);
+    }
+    if key == VK_F8.0 && !ctrl && !alt {
+        return Some(if shift { LINT_PREV } else { LINT_NEXT });
+    }
     if key == VK_RETURN.0 && msg.hwnd == app.find_box {
         return Some(if shift { FIND_PREV } else { FIND_NEXT });
+    }
+    if key == VK_RETURN.0 && msg.hwnd == app.replace_box && app.replace_open {
+        return Some(if ctrl { REPLACE_ALL } else { REPLACE_ONE });
     }
     if key == VK_RETURN.0 && msg.hwnd == app.editor {
         if ctrl {
@@ -311,19 +494,32 @@ fn shortcut(msg: &MSG, app: &App) -> Option<usize> {
     }
     if ctrl {
         match key {
+            0x4e if !alt && !shift && !app.wait => return Some(NEW_NOTE),
             0x4f => return Some(if shift { FOLDER } else { OPEN }),
             0x53 => return Some(if shift { SAVE_AS } else { SAVE }),
             0x57 => return Some(CLOSE),
             0x46 => return Some(FIND),
+            0x48 if !shift && !alt && app.mode() == 3 => return Some(SHOW_REPLACE),
             0x4d if alt => return Some(ADD_REVIEW),
+            0x45 if alt => return Some(EDIT_REVIEW),
+            0x44 if alt => return Some(DELETE_REVIEW),
+            0x58 if msg.hwnd == app.editor => return Some(CUT_SELECTION),
             0x42 if msg.hwnd == app.editor => return Some(BOLD),
+            0x4c if shift && !alt && msg.hwnd == app.editor => return Some(MAKE_TASK),
+            0x20 if !shift && !alt && msg.hwnd == app.editor => return Some(TOGGLE_TASK),
+            0x4b if !alt && msg.hwnd == app.editor && app.mode() == 2 => {
+                return Some(if shift { INSERT_IMAGE } else { LINK });
+            }
             0x49 if msg.hwnd == app.editor => return Some(ITALIC),
             0x5a if msg.hwnd == app.editor => return Some(if shift { REDO } else { UNDO }),
             0x59 if msg.hwnd == app.editor => return Some(REDO),
             0xbb | 0x6b => return Some(ZOOM_IN),
             0xbd | 0x6d => return Some(ZOOM_OUT),
             0x30 => return Some(ZOOM_RESET),
-            0x31..=0x34 if !shift => return Some(MODES + (key - 0x31) as usize),
+            0x31..=0x36 if alt && !shift && msg.hwnd == app.editor => {
+                return Some(HEADING_FIRST + (key - 0x31) as usize);
+            }
+            0x31..=0x34 if !alt && !shift => return Some(MODES + (key - 0x31) as usize),
             0x09 => return Some(if shift { 202 } else { 201 }),
             _ => {}
         }
@@ -332,6 +528,7 @@ fn shortcut(msg: &MSG, app: &App) -> Option<usize> {
 }
 
 struct TreeEntry {
+    item: HTREEITEM,
     path: PathBuf,
     folder: bool,
     loaded: bool,
@@ -340,24 +537,35 @@ struct TreeEntry {
 struct Draft {
     existing: Option<String>,
     capture: Option<(usize, String, review::Anchor)>,
-    format: Option<(Range<usize>, Option<String>)>,
+    format: Option<(usize, Range<usize>)>,
 }
 
 struct App {
     hwnd: HWND,
     wait: bool,
-    toolbar: Vec<(HWND, i32)>,
+    bar: DocumentBar,
+    outline_toggle: HWND,
+    review_toggle: HWND,
+    open_tab: HWND,
+    source_lines: Vec<usize>,
     font: HFONT,
+    strong_font: HFONT,
     brush: HBRUSH,
+    surface: HBRUSH,
+    caption_surface: HBRUSH,
     dpi: i32,
     dark: bool,
-    use_system: bool,
+    theme_choice: usize,
     palette: Palette,
+    appearance: EditorAppearance,
     tab: HWND,
+    tab_close_down: Option<usize>,
+    task_down: Option<(usize, usize)>,
     tree: HWND,
     editor: HWND,
     empty: HWND,
     outline: HWND,
+    outline_list: HWND,
     status: HWND,
     review_list: HWND,
     review_label: HWND,
@@ -365,17 +573,34 @@ struct App {
     review_bounds: RECT,
     document_top: i32,
     review_actions: [HWND; 4],
+    review_all_button: HWND,
+    review_collapse: HWND,
+    review_cards: Vec<cells::ReviewCard>,
+    draft_quote: HWND,
+    draft_frame: Option<RECT>,
+    card_rows: Vec<usize>,
+    review_expanded: bool,
+    review_all: bool,
     draft_box: HWND,
     draft_actions: [HWND; 2],
     find_box: HWND,
-    find_actions: [HWND; 3],
+    find_actions: [HWND; 4],
+    replace_box: HWND,
+    replace_actions: [HWND; 2],
+    replace_open: bool,
+    search_options: pane_md::search::Options,
     docs: Vec<Document>,
     active: Option<usize>,
     parsed: Markdown,
     view: Projection,
     diagrams: Diagrams,
+    remote_images: RemoteImages,
     projection_safe: bool,
+    sync_pending: bool,
+    pending_cell_input: Option<(Range<usize>, u16)>,
+    source_parse_dirty: bool,
     tree_open: bool,
+    outline_open: bool,
     review_open: bool,
     find_open: bool,
     find_headings: bool,
@@ -383,17 +608,23 @@ struct App {
     review_indices: Vec<usize>,
     active_review: Option<String>,
     draft: Option<Draft>,
-    history: Vec<(PathBuf, Viewport)>,
+    history: LinkHistory<(Viewport, i32)>,
     zoom: i32,
-    zoom_status: HWND,
+    zoom_buttons: [HWND; 3],
     workspace: Option<PathBuf>,
     content_width: i32,
+    editor_metrics: (i32, i32, i32),
+    editor_placement: (i32, i32, i32, i32, bool),
 }
 
 impl App {
     fn new(hwnd: HWND, instance: HINSTANCE, wait: bool) -> Result<Self> {
         unsafe {
-            let menu = menu_bar()?;
+            let theme = settings::read_preference("Theme")
+                .map(|value| value as usize)
+                .filter(|value| matches!(*value, THEME | THEME_LIGHT | THEME_DARK))
+                .unwrap_or(THEME_LIGHT);
+            let menu = menu_bar(theme)?;
             SetMenu(hwnd, Some(menu)).map_err(|e| format!("SetMenu: {e}"))?;
             let editor = child(
                 hwnd,
@@ -415,7 +646,15 @@ impl App {
             SetWindowSubclass(editor, Some(document_proc), 1, hwnd.0 as usize)
                 .ok()
                 .map_err(|e| format!("SetWindowSubclass: {e}"))?;
-            let tab = child(hwnd, instance, WC_TABCONTROLW, "", WS_TABSTOP, 0)?;
+            let tab = child(
+                hwnd,
+                instance,
+                WC_TABCONTROLW,
+                "",
+                WS_TABSTOP | WS_CLIPSIBLINGS | WINDOW_STYLE(TCS_OWNERDRAWFIXED),
+                0,
+            )?;
+            let _ = SetWindowSubclass(tab, Some(molecules::tab_proc), 1, hwnd.0 as usize);
             let tree = child(
                 hwnd,
                 instance,
@@ -424,120 +663,148 @@ impl App {
                 WS_TABSTOP
                     | WINDOW_STYLE(
                         TVS_HASBUTTONS
-                            | TVS_HASLINES
-                            | TVS_LINESATROOT
+                            | TVS_FULLROWSELECT
                             | TVS_SHOWSELALWAYS
                             | TVS_DISABLEDRAGDROP,
                     ),
                 0,
             )?;
             let ctrl = |class, label, style, id| child(hwnd, instance, class, label, style, id);
-            let btn = |label, id| ctrl(w!("BUTTON"), label, WS_TABSTOP, id);
-            let label = |text| ctrl(w!("STATIC"), text, WINDOW_STYLE(0), 0);
+            let btn = |label, id| control_button(hwnd, instance, label, id);
+            let label = |text| ctrl(w!("STATIC"), text, SS_OWNERDRAW, 0);
             let field = |id, style| ctrl(w!("EDIT"), "", WS_TABSTOP | WS_BORDER | style, id);
-            let mut toolbar = Vec::new();
-            if !wait {
-                toolbar.push((btn("Открыть…", OPEN)?, 102));
-                toolbar.push((btn("Папка", TREE)?, 72));
-            }
-            for (i, name) in MODES_TEXT.iter().enumerate() {
-                toolbar.push((
-                    ctrl(
-                        w!("BUTTON"),
-                        name,
-                        WS_TABSTOP | WINDOW_STYLE((BS_AUTOCHECKBOX | BS_PUSHLIKE) as u32),
-                        MODES + i,
-                    )?,
-                    if i % 2 == 0 { 118 } else { 109 },
-                ));
-            }
-            toolbar.push((btn("Найти", FIND)?, 70));
-            toolbar.push((btn("Ревью", REVIEWS)?, 73));
-            toolbar.push((btn("Формат", FORMAT)?, 79));
-            toolbar.push((btn("Таблица", TABLE_TOOLS)?, 83));
             let review_list = ctrl(
                 w!("LISTBOX"),
                 "",
-                WS_TABSTOP
-                    | WS_VSCROLL
-                    | WS_BORDER
-                    | WINDOW_STYLE((LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32),
+                WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE((LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32),
                 RESULTS,
             )?;
             let mut app = Self {
                 hwnd,
                 wait,
-                toolbar,
+                bar: DocumentBar::new(hwnd, instance)?,
+                outline_toggle: btn(tr(L::Outline), OUTLINE)?,
+                review_toggle: btn(tr(L::Comments), REVIEWS)?,
+                open_tab: btn(tr(L::OpenTab), OPEN)?,
+                source_lines: Vec::new(),
                 font: HFONT::default(),
+                strong_font: HFONT::default(),
                 brush: HBRUSH::default(),
+                surface: HBRUSH::default(),
+                caption_surface: HBRUSH::default(),
                 dpi: GetDpiForWindow(hwnd).max(96) as i32,
                 palette: Palette::new(false),
+                appearance: settings::load_appearance(),
                 dark: false,
-                use_system: false,
+                theme_choice: theme,
                 tab,
+                tab_close_down: None,
+                task_down: None,
                 tree,
                 editor,
-                empty: label("Откройте Markdown-файл или перетащите его в окно.")?,
-                outline: label("Папка")?,
-                status: label("")?,
+                empty: label(tr(L::EmptyEditor))?,
+                outline: ctrl(w!("STATIC"), tr(L::Files), SS_OWNERDRAW, 0)?,
+                outline_list: ctrl(
+                    w!("LISTBOX"),
+                    "",
+                    WS_TABSTOP
+                        | WS_VSCROLL
+                        | WINDOW_STYLE(
+                            (LBS_NOTIFY
+                                | LBS_NOINTEGRALHEIGHT
+                                | LBS_OWNERDRAWFIXED
+                                | LBS_HASSTRINGS) as u32,
+                        ),
+                    OUTLINE_LIST,
+                )?,
+                status: ctrl(w!("STATIC"), "", SS_OWNERDRAW, 0)?,
                 review_list,
                 review_bounds: RECT::default(),
                 document_top: 0,
-                review_label: label("Комментарии")?,
+                review_label: label(tr(L::Comments))?,
                 review_text: ctrl(
                     w!("EDIT"),
                     "",
-                    WS_VSCROLL
-                        | WS_BORDER
+                    WS_TABSTOP
+                        | WS_VSCROLL
                         | WINDOW_STYLE((ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL) as u32),
                     0,
                 )?,
                 review_actions: [
-                    btn("Добавить", ADD_REVIEW)?,
-                    btn("Править", EDIT_REVIEW)?,
-                    btn("Решить", RESOLVE_REVIEW)?,
-                    btn("Ещё", 204)?,
+                    btn(tr(L::AddComment), ADD_REVIEW)?,
+                    btn(tr(L::ReviewEdit), EDIT_REVIEW)?,
+                    btn(tr(L::Delete), DELETE_REVIEW)?,
+                    btn(tr(L::More), 204)?,
                 ],
+                review_all_button: btn(tr(L::All), REVIEW_ALL)?,
+                review_collapse: btn(tr(L::Collapse), REVIEW_COLLAPSE)?,
+                review_cards: Vec::new(),
+                draft_quote: label("")?,
+                draft_frame: None,
+                card_rows: Vec::new(),
+                review_expanded: false,
+                review_all: false,
                 draft_box: field(
                     0,
                     WS_VSCROLL
                         | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32),
                 )?,
                 draft_actions: [
-                    btn("Применить", REVIEW_SAVE)?,
-                    btn("Отмена", REVIEW_CANCEL)?,
+                    btn(tr(L::SaveComment), REVIEW_COMMIT)?,
+                    btn(tr(L::Cancel), REVIEW_CANCEL)?,
                 ],
                 find_box: field(FIND, WINDOW_STYLE(ES_AUTOHSCROLL as u32))?,
                 find_actions: [
-                    btn("Назад", FIND_PREV)?,
-                    btn("Далее", FIND_NEXT)?,
-                    btn("Закрыть", CLOSE_FIND)?,
+                    btn(tr(L::Back), FIND_PREV)?,
+                    btn(tr(L::Next), FIND_NEXT)?,
+                    btn(tr(L::SearchOptions), FIND_OPTIONS)?,
+                    btn(tr(L::Close), CLOSE_FIND)?,
                 ],
+                replace_box: field(0, WINDOW_STYLE(ES_AUTOHSCROLL as u32))?,
+                replace_actions: [
+                    btn(tr(L::ReplaceOne), REPLACE_ONE)?,
+                    btn(tr(L::ReplaceAll), REPLACE_ALL)?,
+                ],
+                replace_open: false,
+                search_options: pane_md::search::Options::default(),
                 docs: Vec::new(),
                 active: None,
                 parsed: Markdown::default(),
                 view: Projection::default(),
                 diagrams: Diagrams::default(),
+                remote_images: RemoteImages::default(),
                 projection_safe: true,
+                sync_pending: false,
+                pending_cell_input: None,
+                source_parse_dirty: false,
                 tree_open: false,
-                review_open: false,
+                outline_open: false,
+                review_open: !wait,
                 find_open: false,
                 find_headings: false,
                 tree_entries: Vec::new(),
                 review_indices: Vec::new(),
                 active_review: None,
                 draft: None,
-                history: Vec::new(),
+                history: LinkHistory::default(),
                 zoom: 100,
-                zoom_status: label("100%")?,
+                zoom_buttons: [
+                    btn("−", ZOOM_OUT)?,
+                    btn("100%", ZOOM_RESET)?,
+                    btn("+", ZOOM_IN)?,
+                ],
                 workspace: None,
                 content_width: 900,
+                editor_metrics: (0, 0, 0),
+                editor_placement: (0, 0, 0, 0, false),
             };
             send(editor, EM_EXLIMITTEXT, 0, i32::MAX as isize - 1);
             send(editor, EM_SETEVENTMASK, 0, ENM_CHANGE as isize);
             send(editor, EM_SETUNDOLIMIT, 0, 0);
             send(editor, EM_SETREADONLY, 1, 0);
-            send(app.draft_box, EM_SETLIMITTEXT, 32_768, 0);
+            // Keep prose wrapped to the formatting rectangle as the workspace resizes.
+            send(editor, EM_SETTARGETDEVICE, 0, 0);
+            send(app.draft_box, EM_SETLIMITTEXT, i32::MAX as usize - 1, 0);
             DragAcceptFiles(hwnd, !wait);
             app.theme();
             app.fonts();
@@ -548,17 +815,45 @@ impl App {
 
     fn message(&mut self, id: u32, w: WPARAM, l: LPARAM) -> Option<isize> {
         match id {
+            WM_INITMENUPOPUP => {
+                let popup = HMENU(w.0 as *mut _);
+                for (command, forward) in [(BACK, false), (FORWARD_LINK, true)] {
+                    let enabled = self.draft.is_none() && self.history.available(forward);
+                    let flags = if enabled { MF_ENABLED } else { MF_GRAYED };
+                    unsafe {
+                        let _ = EnableMenuItem(popup, command as u32, MF_BYCOMMAND | flags);
+                    }
+                }
+                None
+            }
             WM_COMMAND => {
                 let control = w.0 & 0xffff;
                 let notification = (w.0 >> 16) & 0xffff;
                 if control == ID_DOCUMENT && notification == EN_CHANGE as usize {
-                    unsafe {
-                        let _ = PostMessageW(Some(self.hwnd), WM_SYNC, WPARAM(0), LPARAM(0));
+                    if !self.sync_pending {
+                        self.sync_pending = true;
+                        unsafe {
+                            let _ = PostMessageW(Some(self.hwnd), WM_SYNC, WPARAM(0), LPARAM(0));
+                        }
                     }
                 } else if control == RESULTS && notification == LBN_SELCHANGE as usize {
+                    self.flush_edit();
+                    self.parse_source_edits();
                     self.review_select(true);
+                } else if control == OUTLINE_LIST && notification == LBN_SELCHANGE as usize {
+                    self.jump_outline();
                 } else if notification == 0 {
-                    self.command(control);
+                    let command = if control == OUTLINE
+                        && l.0 == self.outline_toggle.0 as isize
+                        && self.tree_open
+                        && !self.outline_open
+                        && self.nav_is_visible()
+                    {
+                        TREE
+                    } else {
+                        control
+                    };
+                    self.command(command);
                 }
                 Some(0)
             }
@@ -579,26 +874,53 @@ impl App {
                         && !entry.folder
                         && let Err(error) = self.open(entry.path.clone(), 0)
                     {
-                        self.error("Не удалось открыть документ", &error);
+                        self.error(tr(L::OpenError), &error);
                     }
                 }
                 Some(0)
             }
             WM_SYNC => {
-                self.sync();
+                self.flush_edit();
+                Some(0)
+            }
+            WM_TIMER if w.0 == REFRESH_SIDEBARS => {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), REFRESH_SIDEBARS);
+                }
+                self.parse_source_edits();
+                self.refresh_outline();
                 Some(0)
             }
             WM_LINK => {
                 self.follow_at(w.0);
                 Some(0)
             }
+            WM_TASK => {
+                if self.active == usize::try_from(l.0).ok() {
+                    self.toggle_task(w.0);
+                }
+                Some(0)
+            }
+            WM_DIAGRAM_READY => {
+                self.refresh_diagrams();
+                Some(0)
+            }
             WM_DOC_SCROLL => {
-                self.align_reviews();
                 self.place_review_card();
+                self.invalidate_ruler();
                 Some(0)
             }
             WM_REVIEW_HIT => {
                 self.review_hit(w.0);
+                Some(0)
+            }
+            WM_SELECTION_MENU => {
+                self.context_menu(self.editor.0 as usize, l.0);
+                Some(0)
+            }
+            WM_TAB_CLOSE => {
+                self.flush_edit();
+                self.close_tab(w.0);
                 Some(0)
             }
             WM_SIZE => {
@@ -624,10 +946,11 @@ impl App {
                 Some(0)
             }
             WM_SETTINGCHANGE | WM_THEMECHANGED => {
-                self.sync();
-                self.store_position();
-                self.theme();
-                self.refresh_viewport();
+                if self.theme_choice == THEME && self.dark != system_dark() {
+                    self.store_position();
+                    self.theme();
+                    self.refresh_viewport();
+                }
                 Some(0)
             }
             WM_DROPFILES => {
@@ -635,7 +958,11 @@ impl App {
                 Some(0)
             }
             WM_CLOSE => {
-                self.sync();
+                self.flush_edit();
+                if self.draft.is_some() {
+                    self.status(Some(tr(L::FinishDraft)));
+                    return Some(0);
+                }
                 for i in 0..self.docs.len() {
                     if !self.confirm_close(i) {
                         return Some(0);
@@ -650,6 +977,36 @@ impl App {
                 self.context_menu(w.0, l.0);
                 Some(0)
             }
+            WM_GETMINMAXINFO if l.0 != 0 => {
+                let limits = unsafe { &mut *(l.0 as *mut MINMAXINFO) };
+                limits.ptMinTrackSize.x = self.dip(530);
+                limits.ptMinTrackSize.y = self.dip(380);
+                Some(0)
+            }
+            WM_PAINT => {
+                let mut paint = PAINTSTRUCT::default();
+                unsafe {
+                    let dc = BeginPaint(self.hwnd, &mut paint);
+                    self.paint_layout(dc, paint.rcPaint);
+                    let _ = EndPaint(self.hwnd, &paint);
+                }
+                Some(0)
+            }
+            WM_DRAWITEM if l.0 != 0 => {
+                let item = unsafe { &*(l.0 as *const DRAWITEMSTRUCT) };
+                if item.CtlType == ODT_STATIC {
+                    self.draw_label(item);
+                } else if item.hwndItem == self.tab {
+                    self.draw_tab(item);
+                } else if item.hwndItem == self.outline_list {
+                    self.draw_outline(item);
+                } else if (CARD_BASE..CARD_BASE + CARD_SLOTS).contains(&(item.CtlID as usize)) {
+                    self.draw_review_card(item);
+                } else {
+                    self.draw_button(item);
+                }
+                Some(1)
+            }
             WM_ERASEBKGND => {
                 let mut rect = RECT::default();
                 unsafe {
@@ -659,12 +1016,28 @@ impl App {
                 Some(1)
             }
             WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+                let control = HWND(l.0 as *mut _);
+                let paper = [
+                    self.draft_box,
+                    self.find_box,
+                    self.replace_box,
+                    self.draft_quote,
+                ]
+                .contains(&control)
+                    || control == self.review_text && !self.review_indices.is_empty();
                 unsafe {
                     let dc = HDC(w.0 as *mut _);
                     SetTextColor(dc, Palette::rgb(self.palette.text));
-                    SetBkColor(dc, Palette::rgb(self.palette.frame));
+                    SetBkColor(
+                        dc,
+                        Palette::rgb(if paper {
+                            self.palette.canvas
+                        } else {
+                            self.palette.frame
+                        }),
+                    );
                 }
-                Some(self.brush.0 as isize)
+                Some(if paper { self.surface } else { self.brush }.0 as isize)
             }
             _ => None,
         }
@@ -677,215 +1050,135 @@ impl App {
         size * self.dpi / 96
     }
 
-    fn layout(&mut self) {
-        unsafe {
-            let mut rect = RECT::default();
-            let _ = GetClientRect(self.hwnd, &mut rect);
-            let d = |value: i32| value * self.dpi / 96;
-            let width = rect.right;
-            let height = rect.bottom;
-            let mut x = d(12);
-            let mut y = d(10);
-            for (button, item_width) in &self.toolbar {
-                let button_width = d(*item_width);
-                if x + button_width + d(12) > width && x > d(12) {
-                    x = d(12);
-                    y += d(34);
-                }
-                move_to(*button, x, y, button_width, d(29), true);
-                x += button_width + d(5);
-            }
-            y += d(39);
-            if self.find_open {
-                let search_width = (width - d(280)).clamp(d(100), d(460));
-                move_to(self.find_box, d(12), y, search_width, d(26), true);
-                let mut left = d(19) + search_width;
-                for button in self.find_actions {
-                    move_to(button, left, y, d(77), d(26), true);
-                    left += d(82);
-                }
-                y += d(35);
-            } else {
-                move_to(self.find_box, 0, 0, 0, 0, false);
-                for button in self.find_actions {
-                    move_to(button, 0, 0, 0, 0, false);
-                }
-            }
-            move_to(
-                self.tab,
-                d(12),
-                y,
-                width - d(24),
-                d(30),
-                self.active.is_some() && !self.wait,
-            );
-            if self.active.is_some() && !self.wait {
-                y += d(30);
-            }
-            let body = (height - y - d(27)).max(d(60));
-            let tree_width = if self.tree_open && !self.wait {
-                d(220).min(width / 3)
-            } else {
-                0
-            };
-            let review_width = if self.review_open && self.active.is_some() {
-                d(306).min(width / 2)
-            } else {
-                0
-            };
-            move_to(
-                self.outline,
-                d(13),
-                y + d(8),
-                tree_width - d(16),
-                d(20),
-                tree_width > 0,
-            );
-            move_to(
-                self.tree,
-                d(9),
-                y + d(34),
-                tree_width - d(14),
-                body - d(38),
-                tree_width > 0,
-            );
-            let left = tree_width + d(9);
-            let central = (width - left - review_width - d(9)).max(d(100));
-            move_to(self.editor, left, y, central, body, self.active.is_some());
-            move_to(
-                self.empty,
-                left + d(25),
-                y + d(39),
-                central - d(32),
-                d(50),
-                self.active.is_none(),
-            );
-            self.content_width = central;
-            let margin = ((central - d(950)) / 2).max(d(24));
-            margins(self.editor, central, body, margin, self.dpi);
-            let rx = width - review_width + d(2);
-            let rw = review_width - d(14);
-            let visible = review_width > 0;
-            move_to(self.review_label, rx, y + d(8), rw, d(22), visible);
-            let button_width = (rw - d(12)) / 4;
-            for (i, button) in self.review_actions.iter().enumerate() {
-                move_to(
-                    *button,
-                    rx + i as i32 * (button_width + d(4)),
-                    y + d(36),
-                    button_width,
-                    d(26),
-                    visible,
-                );
-            }
-            self.document_top = y;
-            let list_height = (body / 4).clamp(d(58), d(125));
-            move_to(self.review_list, rx, y + d(72), rw, list_height, visible);
-            let content_y = y + d(84) + list_height;
-            let content_height = (body - list_height - d(100)).max(d(40));
-            self.review_bounds = RECT {
-                left: rx,
-                top: content_y,
-                right: rx + rw,
-                bottom: content_y + content_height,
-            };
-            self.place_review_card();
-            move_to(
-                self.draft_box,
-                rx,
-                content_y,
-                rw,
-                (content_height - d(36)).max(d(40)),
-                visible && self.draft.is_some(),
-            );
-            for (i, button) in self.draft_actions.iter().enumerate() {
-                move_to(
-                    *button,
-                    rx + i as i32 * d(106),
-                    content_y + content_height - d(28),
-                    d(100),
-                    d(25),
-                    visible && self.draft.is_some(),
-                );
-            }
-            move_to(
-                self.status,
-                d(13),
-                height - d(21),
-                width - d(97),
-                d(19),
-                true,
-            );
-            move_to(
-                self.zoom_status,
-                width - d(65),
-                height - d(21),
-                d(60),
-                d(19),
-                true,
-            );
-        }
-    }
-
     fn fonts(&mut self) {
         unsafe {
-            let font = CreateFontW(
-                -self.dip(14),
-                0,
-                0,
-                0,
-                FW_NORMAL.0 as i32,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET,
-                OUT_DEFAULT_PRECIS,
-                CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY,
-                0,
-                w!("Segoe UI"),
-            );
+            let font = atoms::ui_font(self.dip(14));
+            let strong = atoms::ui_font_weight(self.dip(15), FW_SEMIBOLD.0);
             for hwnd in self.controls() {
                 send(hwnd, WM_SETFONT, font.0 as usize, 1);
+            }
+            send(
+                self.tab,
+                TCM_SETPADDING,
+                0,
+                (self.dip(27) | (self.dip(5) << 16)) as isize,
+            );
+            send(
+                self.tab,
+                TCM_SETITEMSIZE,
+                0,
+                (self.dip(106) | (self.dip(30) << 16)) as isize,
+            );
+            send(self.tree, TVM_SETITEMHEIGHT, self.dip(24) as usize, 0);
+            for hwnd in [self.outline_list, self.review_list] {
+                send(hwnd, LB_SETITEMHEIGHT, 0, self.dip(30) as isize);
+            }
+            for hwnd in [
+                self.review_text,
+                self.draft_box,
+                self.find_box,
+                self.replace_box,
+            ] {
+                let margin = self.dip(7) as isize;
+                send(
+                    hwnd,
+                    EM_SETMARGINS,
+                    (EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize,
+                    margin | (margin << 16),
+                );
             }
             if !self.font.is_invalid() {
                 let _ = DeleteObject(self.font.into());
             }
+            if !self.strong_font.is_invalid() {
+                let _ = DeleteObject(self.strong_font.into());
+            }
             self.font = font;
+            self.strong_font = strong;
         }
     }
 
     fn controls(&self) -> impl Iterator<Item = HWND> + '_ {
-        self.toolbar
-            .iter()
-            .map(|(hwnd, _)| *hwnd)
+        [self.outline_toggle, self.open_tab]
+            .into_iter()
+            .chain(self.bar.controls())
             .chain([
+                self.review_toggle,
+                self.draft_quote,
                 self.tab,
                 self.tree,
                 self.empty,
                 self.outline,
                 self.status,
-                self.zoom_status,
+                self.outline_list,
                 self.review_label,
                 self.review_list,
                 self.review_text,
                 self.draft_box,
                 self.find_box,
+                self.replace_box,
             ])
             .chain(self.review_actions)
+            .chain([self.review_all_button, self.review_collapse])
+            .chain(
+                self.review_cards
+                    .iter()
+                    .flat_map(|card| [card.body, card.menu]),
+            )
             .chain(self.draft_actions)
             .chain(self.find_actions)
+            .chain(self.replace_actions)
+            .chain(self.zoom_buttons)
+    }
+
+    fn theme_menu(&self) {
+        if !self.caption_surface.is_invalid() {
+            unsafe {
+                let info = MENUINFO {
+                    cbSize: size_of::<MENUINFO>() as u32,
+                    fMask: MIM_BACKGROUND,
+                    hbrBack: self.caption_surface,
+                    ..Default::default()
+                };
+                let _ = SetMenuInfo(GetMenu(self.hwnd), &info);
+                let _ = DrawMenuBar(self.hwnd);
+            }
+        }
     }
 
     fn theme(&mut self) {
-        self.dark = self.use_system && system_dark();
+        self.dark = self.theme_choice == THEME_DARK || self.theme_choice == THEME && system_dark();
         self.palette = Palette::new(self.dark);
         unsafe {
             if !self.brush.is_invalid() {
                 let _ = DeleteObject(self.brush.into());
             }
+            if !self.surface.is_invalid() {
+                let _ = DeleteObject(self.surface.into());
+            }
             self.brush = CreateSolidBrush(Palette::rgb(self.palette.frame));
+            self.surface = CreateSolidBrush(Palette::rgb(self.palette.canvas));
+            let old_caption = self.caption_surface;
+            self.caption_surface = CreateSolidBrush(Palette::rgb(self.palette.caption));
+            self.theme_menu();
+            if !old_caption.is_invalid() {
+                let _ = DeleteObject(old_caption.into());
+            }
             let dark = self.dark as i32;
+            let caption = Palette::rgb(self.palette.caption);
+            let caption_text = Palette::rgb(self.palette.on_caption);
+            let _ = DwmSetWindowAttribute(
+                self.hwnd,
+                windows::Win32::Graphics::Dwm::DWMWA_CAPTION_COLOR,
+                &caption as *const _ as _,
+                size_of_val(&caption) as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                self.hwnd,
+                windows::Win32::Graphics::Dwm::DWMWA_TEXT_COLOR,
+                &caption_text as *const _ as _,
+                size_of_val(&caption_text) as u32,
+            );
             let _ = DwmSetWindowAttribute(
                 self.hwnd,
                 windows::Win32::Graphics::Dwm::DWMWA_USE_IMMERSIVE_DARK_MODE,
@@ -920,12 +1213,7 @@ impl App {
             0,
             Palette::rgb(self.palette.line).0 as isize,
         );
-        send(
-            self.editor,
-            EM_SETBKGNDCOLOR,
-            0,
-            Palette::rgb(self.palette.canvas).0 as isize,
-        );
+        self.document_background();
     }
 }
 
@@ -935,8 +1223,17 @@ impl Drop for App {
             if !self.brush.is_invalid() {
                 let _ = DeleteObject(self.brush.into());
             }
+            if !self.surface.is_invalid() {
+                let _ = DeleteObject(self.surface.into());
+            }
             if !self.font.is_invalid() {
                 let _ = DeleteObject(self.font.into());
+            }
+            if !self.strong_font.is_invalid() {
+                let _ = DeleteObject(self.strong_font.into());
+            }
+            if !self.caption_surface.is_invalid() {
+                let _ = DeleteObject(self.caption_surface.into());
             }
         }
     }

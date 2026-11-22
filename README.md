@@ -1,92 +1,68 @@
-# notepad-md
+<p align="center"><img src="assets/pane-md.png" width="96" height="96" alt="pane-md icon"></p>
 
-Локальный блокнот для чтения, правки и ревью Markdown на Windows 10/11 x64. Комментарии сохраняются внутри документа. Для обычной работы достаточно одного `notepad-md.exe`.
+# pane-md
 
-## Сборка и запуск
+**A local Markdown editor for writing, reading, and reviewing documents.** It keeps comments in the Markdown file, so a person and an agent can work on the same document without a separate review service.
 
-Установите стабильный Rust для `x86_64-pc-windows-msvc` и Visual Studio Build Tools с Windows SDK. Соберите из корня проекта.
+[Русский](README.ru.md) · [Detailed Russian guide](docs/guide.ru.md) · [Releases](https://github.com/letya999/pane-md/releases)
 
-```powershell
+[![CI](https://github.com/letya999/pane-md/actions/workflows/ci.yml/badge.svg)](https://github.com/letya999/pane-md/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Rust 1.95+](https://img.shields.io/badge/Rust-1.95%2B-orange.svg)](Cargo.toml)
+
+## What it does
+
+- Opens files and folders in tabs, with a file explorer and collapsible outline.
+- Switches between rendered WYSIWYG and Markdown source. Reading, reading with comments, and editing are separate modes.
+- Renders headings, lists, tasks, tables, links, local images, emoji, and Mermaid diagrams. Remote images load only when requested.
+- Attaches review cards to selected text, including table cells. Comments, edits, resolved state, and anchors stay in the `.md` file.
+- Follows local files, heading anchors, and supported external links; provides search, replace, undo, and familiar keyboard shortcuts.
+- Exposes a Markdown linter, comment reader, and a local STDIO MCP server for agent workflows.
+- Supports English and Russian, light and dark themes, and appearance settings.
+
+The Windows editor uses native RichEdit. Linux and macOS use the system WebView. Complex Markdown that cannot be safely changed in WYSIWYG remains available in source mode. Existing `notepad-md:review` comments and settings are read for migration.
+
+## Download and run
+
+Download an archive from [Releases](https://github.com/letya999/pane-md/releases) when one is published. The Windows archive contains a portable `pane-md.exe`; no installer or file association is required. Linux requires GTK 3, WebKitGTK 4.1, and an X11 or Wayland session. The macOS archive contains a universal `.app` with an ad hoc signature; it is not Developer ID signed or notarized.
+
+Open a document or a folder:
+
+```text
+pane-md path/to/document.md
+pane-md path/to/folder
+```
+
+Use the **View** and **Format** menus for editor modes and formatting. Select text and press `Ctrl+Alt+M` to comment (`⌘` replaces `Ctrl` on macOS). `Ctrl+F` searches and `Ctrl+S` saves. See the [full guide](docs/guide.ru.md) for platform details and shortcuts.
+
+## Build from source
+
+Install Rust 1.95 or newer. Windows also needs Visual Studio Build Tools and the Windows SDK. Linux needs the GTK 3 and WebKitGTK 4.1 development packages; macOS needs Xcode Command Line Tools.
+
+```sh
 cargo build --release --locked
-.\target\release\notepad-md.exe "C:\docs\Мой документ.md"
-.\target\release\notepad-md.exe "C:\docs\Мой проект"
-.\target\release\notepad-md.exe --source --wait "C:\temp\prompt.txt"
 ```
 
-Ассоциация `.md` не требуется. Можно открыть файл перетаскиванием, нажать `Ctrl+O` для файла или `Ctrl+Shift+O` для папки. Папки читаются по мере раскрытия. `Ctrl+Tab` переключает вкладки, `Ctrl+W` закрывает вкладку, `Ctrl+S` сохраняет. При конфликте на диске можно сохранить буфер под новым именем через `Ctrl+Shift+S`.
+For the CLI and MCP server without GUI dependencies on Linux or macOS:
 
-| Режим | Назначение |
-| --- | --- |
-| WYSIWYG View | Чтение, ссылки, выделение, копирование и комментарии |
-| MD View | Чтение буквального исходника, включая записи ревью |
-| WYSIWYG Edit | Локальные правки текста, формат, ссылки и команды таблицы |
-| MD Source Edit | Правка всего исходника, включая временные файлы без расширения |
-
-`Ctrl+1`…`Ctrl+4` переключают режимы. `Ctrl+F` ищет, `F3` и `Shift+F3` переходят по совпадениям. В WYSIWYG `Ctrl+Enter` открывает ссылку под курсором. В режиме правки ссылки также открываются через `Ctrl+клик`. `Alt+←` возвращает по истории, `Ctrl++` и `Ctrl+-` меняют масштаб. Меню «Вид» переключает светлую и системную тему. Панели папки и комментариев сворачиваются кнопками сверху.
-
-WYSIWYG редактирует сопоставимые диапазоны Markdown. Для сложной структуры, например правки через несколько форматированных фрагментов, ссылок по идентификатору и столбцов в неполных строках таблицы, используйте MD Source Edit. Локальные PNG и JPEG отображаются встроенными средствами Windows. Для удалённых изображений показывается подпись.
-
-Блоки с меткой `mermaid` отображаются в WYSIWYG прямо среди абзацев и таблиц через RichEdit. Диаграмма отрисовывается локально. Выделите её и выберите «Показать в исходнике», чтобы перейти к блоку Markdown. Неподдерживаемые, слишком большие и ошибочные блоки показываются исходником. Математические формулы доступны как исходный текст.
-
-При переключении режимов и вкладок сохраняются выделение и видимая область. «Показать в исходнике» в меню «Вид» и контекстном меню открывает исходник на текущем выделении. «Вид → Найти заголовок» ищет только по заголовкам, с переходом по совпадениям через Enter, F3 и Shift+F3.
-
-## Ревью
-
-Выделите текст в абзаце или одной ячейке и нажмите `Ctrl+Alt+M` или «Добавить» на панели «Ревью». «Применить» добавляет запись в буфер, `Ctrl+S` пишет её в файл. Карточка справа ведёт к выделению. В меню «Ещё» есть перепривязка и переход к сохранённому заголовку. Отдельно отмечаются потерянные и неоднозначные привязки.
-
-Версия 1 записывается как `<!-- notepad-md:review {…} -->` после блока целиком. Значения `row` и `cell` считаются с нуля, строка заголовка таблицы имеет `row: 0`. `line` и `column` в результате MCP начинаются с единицы, столбец измеряется в байтах UTF‑8. `bytes` — полуоткрытый диапазон в UTF‑8 без BOM. RichEdit использует отдельные позиции UTF‑16. Заголовок, координаты ячейки и текст по краям помогают восстановить выделение при внешней правке.
-
-## Внешний редактор Codex
-
-Задайте `VISUAL` в том PowerShell, из которого запускаете Codex CLI. `Ctrl+G` в поле набора открывает временный промпт. Сохраните и закройте окно редактора, чтобы вернуть правку в поле набора. [Документация Codex CLI](https://learn.chatgpt.com/docs/cli-customization#prompt-editor)
-
-```powershell
-$exe = (Resolve-Path .\target\release\notepad-md.exe).Path
-$env:VISUAL = '"' + $exe + '" --source --wait'
-codex
+```sh
+cargo build --release --locked --no-default-features
 ```
 
-Режим `--source --wait` проверен с правкой, сохранением и чтением того же пути для `.txt` и файла без расширения. Сквозная проверка клавиши `Ctrl+G` в установленном Codex CLI 0.170.0 осталась неполной. Автоматизированная консоль не запустила редактор по этой клавише.
+Packaging commands are `python scripts/package-windows.py`, `python3 scripts/package-linux.py`, and `python3 scripts/package-macos.py` on their respective systems. GitHub Actions builds archives for Windows x64, Linux x64, and macOS universal; a `vX.Y.Z` tag matching `Cargo.toml` publishes them with SHA-256 checksums. macOS GUI behavior still needs verification on a Mac.
 
-## MCP
+## CLI and MCP
 
-```toml
-[mcp_servers.notepad-md]
-command = 'C:\apps\notepad-md.exe'
-args = ['--mcp']
+```text
+pane-md --lint README.md
+pane-md --lint --json README.md
+pane-md --list-comments path/to/document.md
+pane-md --source --wait path/to/document.md
+pane-md --mcp
 ```
 
-`open_document` принимает `{"path":"C:\\docs\\Мой документ.md"}`, запускает окно в WYSIWYG View и сразу возвращает путь и `launched`. `list_comments` с тем же аргументом читает сохранённый файл. В ответе `comments` и `diagnostics`. Ошибка чтения возвращается отдельно, повреждённая запись попадает в диагностику с номером строки. `STDOUT` содержит протокол MCP, `STDERR` — диагностику.
+The MCP server uses standard input and output; diagnostic messages go to standard error. It offers `list_comments`, `lint_document`, and, in GUI builds, `open_document`. Relative paths are resolved from the server's working directory. A Codex CLI MCP entry can use the absolute executable path with `args = ["--mcp"]`.
 
-## Проверка Windows
+## Contributing and security
 
-```powershell
-cargo test --locked
-python -X utf8 scripts/fixture.py 'target/Проверка Windows'
-python -X utf8 scripts/smoke.py target/release/notepad-md.exe 'target/Проверка Windows/Большой документ.md'
-```
+Run `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked --all-targets` before a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), the [code of conduct](CODE_OF_CONDUCT.md), and the [changelog](CHANGELOG.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
-Windows x64, сборка 22631, Ryzen 7 7435HS, 32 ГиБ RAM, Rust 1.98.1. Синтетический документ — 167 649 байт, 160 пятиколоночных таблиц. Три пуска каждого варианта, медиана. Время измерялось от вызова CLI до видимого окна и готовности его очереди сообщений. Рабочий набор измерялся через секунду простоя.
-
-| Сценарий | Первый показ | Рабочий набор |
-| --- | ---: | ---: |
-| Пустое окно | 401,5 мс | 15,75 МиБ |
-| Большой документ | 521,8 мс | 24,98 МиБ |
-
-Размер релизного EXE — 8 583 680 байт. `dumpbin /dependents` показал только системные библиотеки Windows. RichEdit прошёл проверку переноса в ячейке, редактирования ячейки, горизонтальной прокрутки и показа Mermaid внутри Markdown. Для ядра без Windows API используются `src/markdown.rs` и `src/review.rs`. Окно, доступ к файлам и STDIO-сервер находятся в `src/desktop`.
-
-### Задержка ввода в WYSIWYG
-
-Флаг `--typing` измеряет вставку символа в обычный абзац до синхронизации буфера и вызова `UpdateWindow`. Документ открыт в отдельном тестовом окне за пределами экрана. Скрипт сверяет сохранённые байты после 50 вставок и исключает первые 10 замеров. В таблице медианы трёх серий для каждой сборки, замеренные до подключения Mermaid.
-
-| Нагрузка | p50 в `1ccdeca` | p50 после ускорения | p95 в `1ccdeca` | p95 после ускорения |
-| --- | ---: | ---: | ---: | ---: |
-| 160 таблиц, 168 КБ | 39,20 мс | 13,55 мс | 89,97 мс | 489,22 мс |
-| 1 000 таблиц, около 1 МиБ | 139,10 мс | 26,83 мс | 176,53 мс | 31,25 мс |
-
-На файле со 160 таблицами p95 заметно гулял между сериями, от 19 до 832 мс в новой сборке. Быстрое обновление карты применяется к простому тексту и ячейкам в документах без записей ревью. Для форматирования и обновления привязок комментариев используется полный разбор.
-
-```powershell
-python -X utf8 scripts/fixture.py 'target/Проверка ввода' --sections 1000
-python -X utf8 scripts/smoke.py target/release/notepad-md.exe 'target/Проверка ввода/Большой документ.md' --typing
-```
+Released packages include dependency notices and license copies. The pane-md source code and original icon are licensed under [MIT](LICENSE).

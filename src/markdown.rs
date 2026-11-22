@@ -1,4 +1,10 @@
+mod format;
+pub use format::{BlockFormat, FormatError, FormatPatch, InlineFormat};
+mod link;
+mod list;
+mod paste;
 mod table;
+pub use list::ListItem;
 pub use table::{TableEdit, table_patch};
 
 use std::ops::Range;
@@ -11,7 +17,7 @@ use comrak::{
 
 use crate::{Bytes, newline, normalize_newlines, utf16_byte};
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Style {
     pub bold: bool,
     pub italic: bool,
@@ -36,6 +42,8 @@ pub struct Run {
     pub image: Option<String>,
     pub units: Vec<Option<Bytes>>,
     pub edit: Option<Edit>,
+    /// Source insertion point for a code line with no text units.
+    pub empty_at: Option<usize>,
 }
 
 #[derive(Default)]
@@ -49,10 +57,12 @@ pub struct Region {
     pub kind: &'static str,
     pub row: Option<usize>,
     pub cell: Option<usize>,
+    missing_cells: usize,
     pub level: u8,
     pub indent: usize,
     pub quote: bool,
     pub mermaid: bool,
+    pub list: Option<ListItem>,
 }
 
 impl Region {
@@ -73,12 +83,10 @@ impl Region {
         (first.start <= last.end).then_some(first.start..last.end)
     }
 
-    pub fn patch(
-        &self,
-        source: &str,
-        selection: Range<usize>,
-        inserted: &str,
-    ) -> Option<(Bytes, String)> {
+    fn edit_range(&self, selection: Range<usize>) -> Option<(Bytes, &Run)> {
+        if selection.start > selection.end {
+            return None;
+        }
         utf16_byte(&self.text, selection.start)?;
         utf16_byte(&self.text, selection.end)?;
         let mut at = 0;
@@ -89,7 +97,9 @@ impl Region {
             if selection.start < span.start || selection.end > span.end {
                 continue;
             }
-            let Some(edit) = run.edit else { continue };
+            if run.edit.is_none() {
+                continue;
+            }
             let start = selection.start - span.start;
             let finish = selection.end - span.start;
             let range = if start == finish {
@@ -104,7 +114,8 @@ impl Region {
                     .map(|r| r.start);
                 let point = right
                     .or(left)
-                    .or_else(|| self.text.is_empty().then_some(self.source.start))?;
+                    .or(run.empty_at)
+                    .or_else(|| run.text.is_empty().then_some(self.source.start))?;
                 point..point
             } else {
                 let units = run.units.get(start..finish)?;
@@ -134,55 +145,81 @@ impl Region {
                 }
                 first.start..last.end
             };
-            if edit == Edit::Cell
-                || edit == Edit::InlineCode
-                || self.level != 0
-                || matches!(self.kind, "list" | "quote" | "footnote")
-            {
-                if inserted.contains(['\r', '\n']) {
-                    return None;
-                }
-            }
-            if edit == Edit::InlineCode && inserted.contains('`') {
-                return None;
-            }
-            if edit == Edit::Code && inserted.contains(['`', '~', '\n', '\r']) {
-                // shortcut: structural code edits belong in source mode until fence/indent rebasing is implemented.
-                return None;
-            }
-            let mut replacement = String::new();
-            for ch in inserted.chars() {
-                if matches!(edit, Edit::Text | Edit::Cell)
-                    && matches!(
-                        ch,
-                        '\\' | '`'
-                            | '*'
-                            | '_'
-                            | '['
-                            | ']'
-                            | '<'
-                            | '>'
-                            | '&'
-                            | '~'
-                            | '|'
-                            | '#'
-                            | '='
-                    )
-                {
-                    replacement.push('\\');
-                }
-                replacement.push(ch);
-            }
-            let ending = newline(source);
-            let replacement = if edit == Edit::Text && self.kind == "paragraph" {
-                normalize_newlines(&replacement, &ending.repeat(2))
-                    .replace('\u{000b}', &format!("  {ending}"))
-            } else {
-                normalize_newlines(&replacement, ending)
-            };
-            return Some((range, replacement));
+            return Some((range, run));
         }
         None
+    }
+
+    pub fn patch(
+        &self,
+        source: &str,
+        selection: Range<usize>,
+        inserted: &str,
+    ) -> Option<(Bytes, String)> {
+        let (range, run) = self.edit_range(selection)?;
+        let edit = run.edit?;
+        if (edit == Edit::Cell
+            || edit == Edit::InlineCode
+            || self.level != 0
+            || matches!(self.kind, "list" | "quote" | "footnote"))
+            && inserted.contains(['\r', '\n'])
+        {
+            return None;
+        }
+        if self.missing_cells != 0 {
+            let raw = paste::literal_line(inserted);
+            let (text, _) = self.materialize_cell(source, &raw);
+            return Some((range, text));
+        }
+        if edit == Edit::InlineCode && inserted.contains('`') {
+            return None;
+        }
+        if edit == Edit::Code && inserted.contains(['`', '~', '\n', '\r']) {
+            // shortcut: structural code edits belong in source mode until fence/indent rebasing is implemented.
+            return None;
+        }
+        let mut replacement = String::new();
+        for ch in inserted.chars() {
+            if matches!(edit, Edit::Text | Edit::Cell)
+                && matches!(
+                    ch,
+                    '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '&' | '~' | '|' | '#' | '='
+                )
+            {
+                replacement.push('\\');
+            }
+            replacement.push(ch);
+        }
+        let ending = newline(source);
+        let mut replacement = if edit == Edit::Text && self.kind == "paragraph" {
+            normalize_newlines(&replacement, &ending.repeat(2))
+        } else {
+            normalize_newlines(&replacement, ending)
+        };
+        if replacement.contains('\u{000b}') {
+            if edit != Edit::Text || self.level != 0 {
+                return None;
+            }
+            let indent = match &self.list {
+                Some(item) => item.continuation_indent(source)?,
+                None if self.kind == "paragraph" => String::new(),
+                None => return None,
+            };
+            replacement = replacement.replace('\u{000b}', &format!("  {ending}{indent}"));
+        }
+        let replacement = if self.list.is_some()
+            && self.source.is_empty()
+            && !replacement.is_empty()
+            && source[..range.start]
+                .chars()
+                .next_back()
+                .is_some_and(|ch| !ch.is_whitespace())
+        {
+            format!(" {replacement}")
+        } else {
+            replacement
+        };
+        Some((range, replacement))
     }
 }
 
@@ -201,12 +238,25 @@ pub struct Owner {
     pub after: usize,
 }
 
+pub struct SourceLink {
+    pub source: Bytes,
+    pub target: String,
+    pub image: bool,
+    pub(crate) footnote: bool,
+    label: Option<Bytes>,
+    title: String,
+    automatic: Option<String>,
+}
+
 #[derive(Default)]
 pub struct Markdown {
+    pub source_links: Vec<SourceLink>,
+    pub(crate) nested_images: Vec<(usize, String)>,
     pub regions: Vec<Region>,
     pub layout: Vec<Layout>,
     pub owners: Vec<Owner>,
     pub records: Vec<crate::review::Record>,
+    pub(crate) review_metadata: Vec<Bytes>,
     pub diagnostics: Vec<crate::review::Diagnostic>,
 }
 
@@ -240,6 +290,15 @@ impl Lines {
             .partition_point(|&start| start <= byte)
             .saturating_sub(1);
         (index + 1, byte - self.starts[index] + 1)
+    }
+
+    pub fn offset(&self, line: usize, column: usize) -> Option<usize> {
+        let index = line.checked_sub(1)?;
+        let at = self
+            .starts
+            .get(index)?
+            .checked_add(column.checked_sub(1)?)?;
+        (at <= self.ends[index]).then_some(at)
     }
 
     pub fn span(&self, pos: Sourcepos) -> Option<Bytes> {
@@ -307,17 +366,16 @@ impl Markdown {
             if matches!(value, NodeValue::FrontMatter(_)) {
                 continue;
             }
-            if let NodeValue::HtmlBlock(html) = value {
-                if html.literal.trim_start().starts_with("<!--") {
-                    crate::review::load(&mut b.doc, source, &b.lines, span);
-                    continue;
-                }
+            if let NodeValue::HtmlBlock(html) = value
+                && html.literal.trim_start().starts_with("<!--")
+            {
+                crate::review::load(&mut b.doc, source, &b.lines, span);
+                continue;
             }
             if let NodeValue::Heading(heading) = value {
-                b.headings.retain(|&(level, _, _)| level < heading.level);
+                b.headings.retain(|&(level, _)| level < heading.level);
                 let title = inline_text(node);
-                let target = b.slugs.anchorize(&title);
-                b.headings.push((heading.level, title, target));
+                b.headings.push((heading.level, title));
             }
             while span.end > span.start && matches!(source.as_bytes()[span.end - 1], b'\r' | b'\n')
             {
@@ -330,8 +388,118 @@ impl Markdown {
             });
             b.block(node, owner, block_kind(value), 0, false, String::new());
         }
+        for node in root.descendants() {
+            let (target, image, footnote, title) = match &node.data().value {
+                NodeValue::Link(link) => (link.url.clone(), false, false, link.title.clone()),
+                NodeValue::Image(image) => (image.url.clone(), true, false, String::new()),
+                NodeValue::FootnoteReference(note) => {
+                    (format!("#fn-{}", note.name), false, true, String::new())
+                }
+                _ => continue,
+            };
+            let span = b.link_span(node);
+            if !span.is_empty() {
+                let label = (!image && !footnote)
+                    .then(|| {
+                        let raw = &source[span.clone()];
+                        if raw.starts_with('[') {
+                            let end = node
+                                .last_child()
+                                .map_or(span.start + 1, |child| b.link_span(child).end);
+                            (end < span.end && source.as_bytes().get(end) == Some(&b']'))
+                                .then_some(span.start + 1..end)
+                        } else if raw.starts_with('<') && raw.ends_with('>') {
+                            Some(span.start + 1..span.end - 1)
+                        } else {
+                            Some(span.clone())
+                        }
+                    })
+                    .flatten();
+                let automatic = label
+                    .as_ref()
+                    .filter(|_| !source[span.clone()].starts_with('['))
+                    .map(|_| inline_text(node));
+                b.doc.source_links.push(SourceLink {
+                    source: span,
+                    target,
+                    image,
+                    footnote,
+                    label,
+                    title,
+                    automatic,
+                });
+            }
+        }
+        b.doc.source_links.sort_unstable_by_key(|link| {
+            (
+                link.source.start,
+                std::cmp::Reverse(link.source.end),
+                link.image,
+            )
+        });
+        let mut previous_end = 0;
+        b.doc.source_links.retain(|link| {
+            if link.source.start < previous_end {
+                if link.image {
+                    b.doc
+                        .nested_images
+                        .push((link.source.start, link.target.clone()));
+                }
+                return false;
+            }
+            previous_end = link.source.end;
+            true
+        });
         crate::review::bind(&mut b.doc, source);
         b.doc
+    }
+
+    pub fn push_empty_paragraph(&mut self, caret: usize) {
+        let heading = self
+            .regions
+            .last()
+            .map_or_else(String::new, |r| r.heading.clone());
+        let owner = self.owners.len();
+        self.owners.push(Owner {
+            source: caret..caret,
+            after: caret,
+        });
+        self.layout.push(Layout::Text(self.regions.len()));
+        self.regions.push(Region {
+            runs: vec![Run {
+                edit: Some(Edit::Text),
+                ..Run::default()
+            }],
+            source: caret..caret,
+            owner,
+            kind: "paragraph",
+            heading,
+            ..Region::default()
+        });
+    }
+
+    pub fn source_link(&self, byte: usize) -> Option<&SourceLink> {
+        let i = self
+            .source_links
+            .partition_point(|link| link.source.end <= byte);
+        self.source_links
+            .get(i)
+            .filter(|link| link.source.contains(&byte))
+    }
+
+    pub fn anchor_byte(&self, fragment: &str) -> Option<usize> {
+        if let Some(name) = fragment.strip_prefix("fnref-")
+            && let Some(link) = self
+                .source_links
+                .iter()
+                .find(|link| link.footnote && link.target.strip_prefix("#fn-") == Some(name))
+        {
+            return Some(link.source.start);
+        }
+        self.regions
+            .iter()
+            .find(|region| !region.slug.is_empty() && region.slug == fragment)
+            .map(|region| region.source.start)
     }
 }
 
@@ -339,16 +507,34 @@ struct Builder<'a> {
     source: &'a str,
     lines: Lines,
     doc: Markdown,
-    headings: Vec<(u8, String, String)>,
+    headings: Vec<(u8, String)>,
     slugs: comrak::Anchorizer,
 }
 
 impl Builder<'_> {
     fn span(&self, node: Node<'_>) -> Bytes {
+        let data = node.data();
         self.lines
-            .span(node.data().sourcepos)
+            .span(data.sourcepos)
+            .map(|mut span| {
+                // Comrak can end a nested table's span before the final closing pipe.
+                if matches!(data.value, NodeValue::Table(_)) {
+                    span.end = self.lines.end_of_line(span.end);
+                }
+                span
+            })
             .filter(|range| self.source.get(range.clone()).is_some())
             .unwrap_or_default()
+    }
+
+    fn table_row_span(&self, row: Node<'_>, quote_depth: usize) -> Bytes {
+        if matches!(row.data().value, NodeValue::TableRow(true)) {
+            return self.span(row);
+        }
+        let line = row.data().sourcepos.start.line - 1;
+        let start = self.lines.starts[line];
+        let end = self.lines.ends[line];
+        start + table::row_prefix_len(&self.source[start..end], quote_depth)..end
     }
 
     fn region(
@@ -368,7 +554,7 @@ impl Builder<'_> {
             heading: self
                 .headings
                 .iter()
-                .map(|(_, title, _)| title.as_str())
+                .map(|(_, title)| title.as_str())
                 .collect::<Vec<_>>()
                 .join(" / "),
             ..Region::default()
@@ -404,7 +590,32 @@ impl Builder<'_> {
                         }
                         _ => "•  ".into(),
                     };
+                    let raw = self.span(item);
+                    let task = if let TaskItem(task) = &item.data().value {
+                        self.lines
+                            .span(task.symbol_sourcepos)
+                            .map(|span| span.start)
+                    } else {
+                        None
+                    };
+                    let mut metadata = ListItem::new(self.source, raw, task);
+                    if item.first_child().is_none() && metadata.is_some() {
+                        let mut region = self.region(item, owner, kind, indent + 1, quoted);
+                        let end = self.lines.end_of_line(region.source.start);
+                        region.source = end..end;
+                        region.list = metadata.take();
+                        region
+                            .runs
+                            .push(display_run(bullet.clone(), Style::default(), None));
+                        region.runs.push(Run {
+                            edit: Some(Edit::Text),
+                            ..Run::default()
+                        });
+                        let index = self.add(region);
+                        self.doc.layout.push(Layout::Text(index));
+                    }
                     for (j, child) in item.children().enumerate() {
+                        let index = self.doc.regions.len();
                         self.block(
                             child,
                             owner,
@@ -417,6 +628,12 @@ impl Builder<'_> {
                                 String::new()
                             },
                         );
+                        if j == 0
+                            && matches!(&child.data().value, Paragraph | Heading(_))
+                            && let Some(region) = self.doc.regions.get_mut(index)
+                        {
+                            region.list = metadata.take();
+                        }
                     }
                 }
             }
@@ -450,8 +667,12 @@ impl Builder<'_> {
             }
             Table(table) => {
                 let mut rows = Vec::new();
+                let quote_depth = node
+                    .ancestors()
+                    .filter(|parent| matches!(parent.data().value, BlockQuote))
+                    .count();
                 for (row_index, row) in node.children().enumerate() {
-                    let raw_cells = split_row(self.source, self.span(row));
+                    let raw_cells = split_row(self.source, self.table_row_span(row, quote_depth));
                     let mut cells = Vec::new();
                     for (cell_index, cell) in row.children().enumerate() {
                         let mut region = self.region(cell, owner, "table", indent, quoted);
@@ -459,6 +680,9 @@ impl Builder<'_> {
                             let s = &self.source[raw.clone()];
                             let start = raw.start + s.len() - s.trim_start().len();
                             region.source = start..(raw.start + s.trim_end().len()).max(start);
+                        } else if let Some(last) = raw_cells.last() {
+                            region.source = last.end..last.end;
+                            region.missing_cells = cell_index + 1 - raw_cells.len();
                         }
                         region.row = Some(row_index);
                         region.cell = Some(cell_index);
@@ -470,7 +694,7 @@ impl Builder<'_> {
                                 ..Style::default()
                             },
                         );
-                        if region.runs.is_empty() && cell_index < raw_cells.len() {
+                        if region.runs.is_empty() && !raw_cells.is_empty() {
                             region.runs.push(Run {
                                 edit: Some(Edit::Cell),
                                 ..Run::default()
@@ -499,7 +723,12 @@ impl Builder<'_> {
                     code: true,
                     ..Style::default()
                 };
-                let body = code.literal.strip_suffix('\n').unwrap_or(&code.literal);
+                let literal = if code.literal.contains('\r') {
+                    std::borrow::Cow::Owned(normalize_newlines(&code.literal, "\n"))
+                } else {
+                    std::borrow::Cow::Borrowed(code.literal.as_str())
+                };
+                let body = literal.strip_suffix('\n').unwrap_or(&literal);
                 let mut cursor = region.source.start;
                 if code.fenced
                     && let Some(next) = self.lines.starts.get(data.sourcepos.start.line)
@@ -523,6 +752,7 @@ impl Builder<'_> {
                         units: units.unwrap_or_else(|| empty_units(line)),
                         style,
                         edit,
+                        empty_at: found.filter(|_| line.is_empty()),
                         ..Run::default()
                     });
                     cursor = self
@@ -539,11 +769,7 @@ impl Builder<'_> {
                 let mut region = self.region(node, owner, kind, indent, quoted);
                 if let Heading(heading) = &data.value {
                     region.level = heading.level;
-                    region.slug = self
-                        .headings
-                        .last()
-                        .map(|x| x.2.clone())
-                        .unwrap_or_default();
+                    region.slug = self.slugs.anchorize(&inline_text(node));
                 }
                 if !prefix.is_empty() {
                     region
@@ -658,7 +884,22 @@ impl Inlines<'_, '_> {
                 self.advance(node);
             }
             HtmlInline(html) => {
-                if !html.starts_with("<!--") {
+                if ["<br>", "<br/>", "<br />"]
+                    .iter()
+                    .any(|tag| html.eq_ignore_ascii_case(tag))
+                {
+                    let span = self.builder.span(node);
+                    let mapped = self
+                        .builder
+                        .source
+                        .get(span.clone())
+                        .filter(|raw| *raw == html)
+                        .map(|_| span);
+                    self.runs.push(Run {
+                        units: vec![mapped],
+                        ..display_run("\u{000b}".into(), style, link.map(str::to_owned))
+                    });
+                } else if !html.starts_with("<!--") {
                     self.runs.push(display_run(
                         html.clone(),
                         Style {
@@ -727,6 +968,7 @@ impl Inlines<'_, '_> {
                 Some(edit)
             },
             image: None,
+            empty_at: None,
         });
     }
 }
@@ -780,8 +1022,10 @@ fn decode_units(
             (std::borrow::Cow::Owned(char::from(byte).to_string()), 2)
         } else if ch == '&'
             && let Some(end) = tail
-                .get(..tail.floor_char_boundary(tail.len().min(40)))
-                .and_then(|head| head.find(';'))
+                .as_bytes()
+                .iter()
+                .take(40)
+                .position(|&byte| byte == b';')
         {
             let entity = &tail[..=end];
             let decoded = html_escape::decode_html_entities(entity);

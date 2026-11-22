@@ -1,29 +1,68 @@
 [package]
-name = "notepad-md"
+name = "pane-md"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
+description = "Local Markdown editor for writing, reading, and in-file review"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/letya999/pane-md"
+keywords = ["markdown", "editor", "review", "mcp"]
+categories = ["text-editors"]
+
+[features]
+default = ["desktop-gui"]
+desktop-gui = ["dep:base64", "dep:gtk", "dep:imagesize", "dep:merman", "dep:png", "dep:resvg", "dep:rfd", "dep:tao", "dep:tempfile", "dep:uuid", "dep:wry"]
 
 [dependencies]
 comrak = { version = "0.55", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 html-escape = "0.2"
+regex = "1"
+tokio = { version = "1", features = ["rt"] }
+rmcp = { version = "3.11", default-features = false, features = ["server", "macros", "transport-io"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+base64 = { version = "0.23", optional = true }
+png = { version = "0.18", optional = true }
+imagesize = { version = "0.15", optional = true }
+merman = { version = "0.11.0", features = ["math", "system-timing"], optional = true }
+resvg = { version = "0.50", default-features = false, features = ["system-fonts", "text"], optional = true }
+# GTK handles Linux input. Tao's optional X11 device listener can outlive the event loop.
+tao = { version = "0.37", optional = true, default-features = false, features = ["rwh_06"] }
+wry = { version = "0.57", optional = true }
+tempfile = { version = "3", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rfd = { version = "0.18", optional = true, default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-mermaid-svg = "0.7"
-resvg = { version = "0.50", default-features = false, features = ["system-fonts", "text"] }
-rmcp = { version = "3.11", default-features = false, features = ["server", "macros", "transport-io"] }
+base64 = "0.23"
+imagesize = "0.15"
 tempfile = "3"
-tokio = { version = "1", features = ["rt"] }
+ureq = { version = "=3.5.0", default-features = false, features = ["rustls"] }
+merman = { version = "0.11.0", features = ["math", "system-timing"] }
+resvg = { version = "0.50", default-features = false, features = ["system-fonts", "text"] }
 uuid = { version = "1", features = ["v4"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_Graphics_Imaging",
-    "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Registry",
-    "Win32_Storage_FileSystem", "Win32_UI_Controls", "Win32_UI_Controls_RichEdit",
-    "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell",
+    "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_LibraryLoader",
+    "Win32_System_Memory", "Win32_System_Registry", "Win32_System_Time",
+    "Win32_Storage_FileSystem", "Win32_UI_Controls", "Win32_UI_Controls_Dialogs", "Win32_UI_Controls_RichEdit",
+    "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging"
 ] }
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3.0.11"
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 lto = "thin"

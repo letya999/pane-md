@@ -1,5 +1,5 @@
 
-"""Check Windows process lifetime, MCP framing and startup measurements."""
+"""Check Windows process lifetime, MCP framing, folder refresh, and startup."""
 import argparse
 import ctypes as c
 from ctypes import wintypes as w
@@ -13,7 +13,9 @@ import time
 PARSER = argparse.ArgumentParser(description=__doc__)
 PARSER.add_argument("exe", type=Path)
 PARSER.add_argument("fixture", type=Path)
-PARSER.add_argument("--typing", action="store_true", help="measure WYSIWYG input on a temporary copy")
+benchmarks = PARSER.add_mutually_exclusive_group()
+benchmarks.add_argument("--typing", action="store_true", help="measure WYSIWYG input on a temporary copy")
+benchmarks.add_argument("--mode-switch", action="store_true", help="measure read/edit mode switches")
 args = PARSER.parse_args()
 exe = str(args.exe.resolve(strict=True))
 fixture = args.fixture.resolve(strict=True)
@@ -88,7 +90,7 @@ def close_window(hwnd, pid):
         KERNEL.CloseHandle(with_handle)
 
 def measure(path):
-    title = "notepad-md" if path is None else f"{path.name} — notepad-md"
+    title = "pane-md" if path is None else f"{path.name} — pane-md"
     existing = {pid for _, pid in windows(title)}
     start = time.perf_counter()
     subprocess.run([exe, *([str(path)] if path else [])], check=True, timeout=5)
@@ -114,9 +116,9 @@ def review_fixture(path):
         "text": "Проверка Ж😀 -->\nВторая строка.", "status": "open",
     }
     line = json.dumps(record, ensure_ascii=False, separators=(",", ":")).replace("--", "\\u002D\\u002D")
-    tag = f"<!-- notepad-md:review {line} -->"
+    tag = f"<!-- pane-md:review {line} -->"
     path.write_bytes(("# Lead time\n\n| X | Y |\n| --- | --- |\n| Ж😀 **P85** by team | P85 |\n\n"
-                      f"{tag}\n\n```md\n{tag}\n```\n\n<!-- notepad-md:review {{broken}} -->\n"
+                      f"{tag}\n\n```md\n{tag}\n```\n\n<!-- pane-md:review {{broken}} -->\n"
                       "<!-- external html comment -->\n").encode("utf-8"))
     return record
 
@@ -132,7 +134,7 @@ def create_gui_review(folder):
     content = "# Lead time\n\n| Metric | Value | Note |\n| --- | --- | --- |\n| P85 | 7 | Ж😀 |\n"
     path.write_bytes(content.encode("utf-8"))
     subprocess.run([exe, str(path)], check=True, timeout=5)
-    hwnd, pid = wait_window(f"{path.name} — notepad-md")
+    hwnd, pid = wait_window(f"{path.name} — pane-md")
     try:
         editor = USER.FindWindowExW(hwnd, None, "RICHEDIT50W", None)
         assert editor
@@ -153,8 +155,8 @@ def create_gui_review(folder):
         command(hwnd, 123)
         command(hwnd, 103)
         saved = path.read_bytes().decode("utf-8")
-        assert saved.count("<!-- notepad-md:review ") == 1
-        start = saved.index("\n\n<!-- notepad-md:review ")
+        assert saved.count("<!-- pane-md:review ") == 1
+        start = saved.index("\n\n<!-- pane-md:review ")
         end = saved.index("-->", start) + 3
         assert saved[:start] + saved[end:] == content
         return path, note
@@ -165,7 +167,7 @@ def check_mcp(folder):
     path = folder / "Комментарий теста.md"
     expected = review_fixture(path)
     content = path.read_bytes()
-    title = f"{path.name} — notepad-md"
+    title = f"{path.name} — pane-md"
     gui_path, gui_note = create_gui_review(folder)
     with subprocess.Popen([exe, "--mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True, encoding="utf-8", cwd=folder) as server:
@@ -188,7 +190,7 @@ def check_mcp(folder):
 
         assert "result" in request("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}})
         request("notifications/initialized", notice=True)
-        assert {tool["name"] for tool in request("tools/list")["result"]["tools"]} == {"open_document", "list_comments"}
+        assert {tool["name"] for tool in request("tools/list")["result"]["tools"]} == {"open_document", "list_comments", "lint_document"}
 
         def call(name, path):
             return request("tools/call", {"name": name, "arguments": {"path": str(path)}})
@@ -212,7 +214,7 @@ def check_mcp(folder):
         assert path.read_bytes() == content
         server.stdin.close()
         assert server.wait(timeout=5) == 0
-        assert "notepad-md MCP" in server.stderr.read()
+        assert "pane-md MCP" in server.stderr.read()
 
 def check_wait(folder):
     for name in ("Промпт с пробелами.txt", "Промпт без расширения"):
@@ -220,7 +222,7 @@ def check_wait(folder):
         data = "Временный промпт.\r\n".encode("utf-8")
         path.write_bytes(data)
         process = subprocess.Popen([exe, "--source", "--wait", name], cwd=folder)
-        hwnd, pid = wait_window(f"{name} — notepad-md", pid=process.pid)
+        hwnd, pid = wait_window(f"{name} — pane-md", pid=process.pid)
         assert process.poll() is None
         editor = USER.FindWindowExW(hwnd, None, "RICHEDIT50W", None)
         assert editor
@@ -232,13 +234,70 @@ def check_wait(folder):
         assert process.wait(timeout=5) == 0
         assert path.read_bytes() == replacement.encode("utf-8")
 
+def check_table_keyboard(folder):
+    path = folder / "Table keyboard QA.md"
+    original = b"| A | B | C |\r\n| --- | --- | --- |\r\n| x |\r\n\r\nAfter.\r\n"
+    path.write_bytes(original)
+    subprocess.run([exe, str(path)], check=True, timeout=5)
+    hwnd, pid = wait_window(f"{path.name} — pane-md")
+    try:
+        USER.ShowWindow(hwnd, 0)
+        assert USER.SetWindowPos(hwnd, None, -20_000, -20_000, 0, 0, 0x0015)
+        USER.ShowWindow(hwnd, 4)
+        editor = USER.FindWindowExW(hwnd, None, "RICHEDIT50W", None)
+        assert editor
+        command(hwnd, 152)  # WYSIWYG editing.
+        USER.SendMessageW(editor, 0x00B1, 2, 2)  # First cell follows the RichEdit row opening.
+
+        def tab():
+            assert USER.PostMessageW(editor, 0x0100, 0x09, 1)
+            time.sleep(.12)
+
+        tab()
+        USER.SendMessageW(editor, 0x0102, ord("!"), 1)
+        command(hwnd, 103)
+        changed = original.replace(b"| B |", b"| !B |")
+        assert path.read_bytes() == changed
+        for _ in range(5):
+            tab()
+        USER.SendMessageW(editor, 0x0102, ord("Q"), 1)
+        command(hwnd, 103)
+        assert path.read_bytes() == changed.replace(b"| x |", b"| x |\r\n|   Q|   |   |")
+    finally:
+        close_window(hwnd, pid)
+
+
+def check_folder(folder):
+    project = folder / "Notes"
+    project.mkdir()
+    first = project / "Plan.md"
+    first.write_text("# Plan\n", encoding="utf-8")
+    (project / "image.png").write_bytes(b"not a document")
+    process = subprocess.Popen([exe, "--gui", str(project)])
+    try:
+        hwnd, pid = wait_window("pane-md", pid=process.pid)
+        tree = USER.FindWindowExW(hwnd, None, "SysTreeView32", None)
+        assert tree and USER.SendMessageW(tree, 0x1105, 0, 0) == 2  # TVM_GETCOUNT
+        (project / "Tasks.MD").write_text("# Tasks\n", encoding="utf-8")
+        command(hwnd, 254)  # Refresh files
+        assert USER.SendMessageW(tree, 0x1105, 0, 0) == 3
+        first.unlink()
+        command(hwnd, 254)
+        assert USER.SendMessageW(tree, 0x1105, 0, 0) == 2
+        close_window(hwnd, pid)
+        assert process.wait(timeout=5) == 0
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+
 def measure_typing(directory):
     marker = b"Typing probex"
     path = directory / "Typing benchmark.md"
     original = marker + b"\n\n" + fixture.read_bytes()
     path.write_bytes(original)
     subprocess.run([exe, str(path)], check=True, timeout=5)
-    hwnd, pid = wait_window(f"{path.name} — notepad-md")
+    hwnd, pid = wait_window(f"{path.name} — pane-md")
     try:
         # Keep the benchmark from receiving keyboard input from the interactive desktop.
         USER.ShowWindow(hwnd, 0)
@@ -263,18 +322,44 @@ def measure_typing(directory):
     finally:
         close_window(hwnd, pid)
 
-with tempfile.TemporaryDirectory(prefix="notepad-md-smoke-") as directory:
+def measure_mode_switch():
+    title = f"{fixture.name} — pane-md"
+    existing = {pid for _, pid in windows(title)}
+    subprocess.run([exe, str(fixture)], check=True, timeout=5)
+    hwnd, pid = wait_window(title, existing)
+    try:
+        USER.ShowWindow(hwnd, 0)
+        assert USER.SetWindowPos(hwnd, None, -20_000, -20_000, 0, 0, 0x0015)
+        USER.ShowWindow(hwnd, 4)
+        samples = []
+        for trial in range(26):
+            start = time.perf_counter_ns()
+            command(hwnd, 152 if trial % 2 == 0 else 150)
+            USER.UpdateWindow(hwnd)
+            if trial >= 6:
+                samples.append((time.perf_counter_ns() - start) / 1_000_000)
+        print(f"WYSIWYG read/edit, {fixture.stat().st_size} bytes, n={len(samples)}: "
+              f"p50={statistics.median(samples):.2f} ms, p95={sorted(samples)[-2]:.2f} ms")
+    finally:
+        close_window(hwnd, pid)
+
+
+with tempfile.TemporaryDirectory(prefix="pane-md-smoke-") as directory:
     if args.typing:
         measure_typing(Path(directory))
+    elif args.mode_switch:
+        measure_mode_switch()
     else:
         check_mcp(Path(directory))
         check_wait(Path(directory))
+        check_table_keyboard(Path(directory))
+        check_folder(Path(directory))
 
-if not args.typing:
+if not (args.typing or args.mode_switch):
     before = fixture.read_bytes()
     for label, target in [("empty", None), ("large", fixture)]:
         observations = [measure(target) for _ in range(3)]
         print(label, "samples (ms, MiB):", observations,
               "medians:", tuple(statistics.median(column) for column in zip(*observations)))
     assert fixture.read_bytes() == before
-    print("MCP and CLI lifecycle checks passed; EXE bytes:", Path(exe).stat().st_size)
+    print("MCP, CLI lifecycle, table keyboard navigation, and folder refresh checks passed; EXE bytes:", Path(exe).stat().st_size)

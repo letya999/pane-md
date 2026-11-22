@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data: 'self' https: http:; base-uri 'none'; form-action 'none'">
+  <title>pane-md</title>
+  <link rel="icon" href="/icon.png">
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/app.css">
+  <script defer src="/components.js"></script>
+  <script defer src="/source-pane.js"></script>
+  <script defer src="/review-pane.js"></script>
+  <script defer src="/appearance.js"></script>
+  <script defer src="/format.js"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <nav id="menu"><img src="/icon.png" alt=""></nav>
+  <div id="document-bar"><div id="tabs" role="tablist"></div></div>
+  <main id="workspace" data-ui>
+    <aside id="navigation" hidden>
+      <div class="pane-heading"><strong id="navigation-title"></strong><button id="hide-navigation" type="button" aria-controls="navigation-content"></button></div>
+      <div id="navigation-content"></div>
+    </aside>
+    <div id="navigation-edge" class="pane-edge" hidden><button id="open-navigation" type="button" aria-controls="navigation-content"></button></div>
+    <section id="document-area">
+      <div id="modes" class="pane-heading" hidden></div>
+      <div id="find" hidden></div>
+      <div id="replace" hidden></div>
+      <div id="empty"></div>
+      <div id="source-pane" hidden>
+        <div id="source-decoration" aria-hidden="true"><div id="source-lines"></div></div>
+        <textarea id="source" spellcheck="false" hidden></textarea>
+      </div>
+      <div id="reading" tabindex="-1" hidden><article id="preview"></article></div>
+    </section>
+    <div id="reviews-edge" class="pane-edge" hidden><button id="open-reviews" type="button" aria-controls="reviews-content"></button></div>
+    <aside id="reviews" hidden>
+      <div class="pane-heading"><strong id="reviews-title"></strong><div class="pane-buttons"><span id="review-actions"></span><button id="hide-reviews" type="button" aria-controls="reviews-content"></button></div></div>
+      <div id="reviews-content"></div>
+    </aside>
+  </main>
+  <dialog id="insert-link" aria-labelledby="insert-link-title"></dialog>
+  <dialog id="appearance" aria-labelledby="appearance-title"></dialog>
+  <footer>
+    <output id="status" aria-live="polite"></output>
+    <div id="zoom"><button id="zoom-reset">100%</button><button id="zoom-out">−</button><button id="zoom-in">+</button></div>
+  </footer>
+</body>
+</html>

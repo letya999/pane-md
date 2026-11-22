@@ -1,5 +1,9 @@
+pub mod links;
+pub mod lint;
 pub mod markdown;
 pub mod review;
+pub mod search;
+pub mod text_file;
 
 use std::ops::Range;
 

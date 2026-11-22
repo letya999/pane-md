@@ -1,5 +1,5 @@
 use super::*;
-use notepad_md::{diff, markdown::Edit};
+use pane_md::{diff, markdown::Edit};
 
 pub(in crate::desktop) fn apply_plain_edit(
     doc: &mut Markdown,
@@ -73,13 +73,22 @@ pub(in crate::desktop) fn apply_plain_edit(
         };
         for region in &mut doc.regions[index + 1..] {
             shift_span(&mut region.source);
-            for unit in region
-                .runs
-                .iter_mut()
-                .flat_map(|run| &mut run.units)
-                .flatten()
-            {
-                shift_span(unit);
+            if let Some(item) = &mut region.list {
+                shift_span(&mut item.source);
+                shift_span(&mut item.marker);
+                if let Some(task) = &mut item.task {
+                    shift(task, byte_delta);
+                }
+            }
+            for run in &mut region.runs {
+                if let Some(at) = &mut run.empty_at
+                    && *at >= bytes.end
+                {
+                    shift(at, byte_delta);
+                }
+                for unit in run.units.iter_mut().flatten() {
+                    shift_span(unit);
+                }
             }
         }
         shift(&mut doc.owners[owner].source.end, byte_delta);
@@ -97,6 +106,7 @@ pub(in crate::desktop) fn apply_plain_edit(
                 }
             }
         }
+        doc.shift_links_after(bytes.end, byte_delta);
     }
     if native_delta != 0 {
         shift(&mut view.region[index].end, native_delta);
@@ -152,10 +162,10 @@ pub(in crate::desktop) fn fit_trimmed_spaces(
         let end = at_run + run.units.len();
         if run.edit.is_some() && (at_run..=end).contains(&local.start) {
             let index = local.start - at_run;
-            let Some(run_at) = notepad_md::utf16_byte(&run.text, index) else {
+            let Some(run_at) = pane_md::utf16_byte(&run.text, index) else {
                 return false;
             };
-            let Some(region_at) = notepad_md::utf16_byte(&region.text, local.start) else {
+            let Some(region_at) = pane_md::utf16_byte(&region.text, local.start) else {
                 return false;
             };
             let literal = &source[byte_start..caret];
@@ -214,27 +224,7 @@ pub(in crate::desktop) fn fit_new_paragraph(
     {
         return false;
     }
-    let index = doc.regions.len();
-    let heading = doc
-        .regions
-        .last()
-        .map_or_else(String::new, |region| region.heading.clone());
-    doc.owners.push(notepad_md::markdown::Owner {
-        source: source_caret..source_caret,
-        after: source_caret,
-    });
-    doc.regions.push(Region {
-        runs: vec![Run {
-            edit: Some(Edit::Text),
-            ..Run::default()
-        }],
-        source: source_caret..source_caret,
-        owner: doc.owners.len() - 1,
-        kind: "paragraph",
-        heading,
-        ..Region::default()
-    });
-    doc.layout.push(Layout::Text(index));
+    doc.push_empty_paragraph(source_caret);
     view.text.push(13);
     view.region.push(text.len()..text.len());
     true

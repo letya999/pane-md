@@ -28,7 +28,7 @@ for number in range(1, args.sections + 1):
                     "| Медиана | 4 дня | Расчёт по рабочим дням с исключением остановок | см. выше | ОК |\n\n"
                     "- [x] Сверка источников\n- [ ] Проверка отчёта\n\n")
 sections.append("## Приложение\n\nУточнение[^note].\n\n[^note]: Синтетические данные.\n\n"
-                "```md\n<!-- notepad-md:review {\"v\":1,\"id\":\"example\"} -->\n```\n\n<!-- обычный комментарий -->\n")
+                "```md\n<!-- pane-md:review {\"v\":1,\"id\":\"example\"} -->\n```\n\n<!-- обычный комментарий -->\n")
 path = root / "Большой документ.md"
 path.write_text("".join(sections), encoding="utf-8", newline="\n")
 print(f"{path.name}: {path.stat().st_size} bytes, {args.sections} tables")

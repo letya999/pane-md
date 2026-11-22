@@ -8,7 +8,8 @@ use crate::{
     newline, utf16_byte,
 };
 
-const TAG: &str = "<!-- notepad-md:review";
+pub(crate) const TAG: &str = "<!-- pane-md:review";
+pub(crate) const LEGACY_TAG: &str = "<!-- notepad-md:review";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Anchor {
@@ -21,6 +22,8 @@ pub struct Anchor {
     pub cell: Option<usize>,
     pub prefix: String,
     pub suffix: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,6 +41,8 @@ pub struct Review {
     pub anchor: Anchor,
     pub text: String,
     pub status: Status,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -48,6 +53,8 @@ pub enum Binding {
         region: usize,
         #[serde(skip)]
         selection: Range<usize>,
+        #[serde(skip)]
+        tail: Option<(usize, Range<usize>)>,
         line: usize,
         column: usize,
         bytes: Bytes,
@@ -86,12 +93,16 @@ pub(crate) fn load(doc: &mut Markdown, source: &str, lines: &Lines, span: Bytes)
         return;
     };
     let trimmed = raw.trim();
-    let Some(payload) = trimmed.strip_prefix(TAG) else {
+    let Some(payload) = trimmed
+        .strip_prefix(TAG)
+        .or_else(|| trimmed.strip_prefix(LEGACY_TAG))
+    else {
         return;
     };
     if !payload.starts_with(char::is_whitespace) && !payload.starts_with("-->") {
         return;
     }
+    doc.review_metadata.push(span.clone());
     let parsed = (|| {
         let json = payload
             .strip_suffix("-->")
@@ -111,6 +122,9 @@ pub(crate) fn load(doc: &mut Markdown, source: &str, lines: &Lines, span: Bytes)
         let review: Review = serde_json::from_value(value).map_err(|e| e.to_string())?;
         if review.id.trim().is_empty() || review.quote.trim().is_empty() {
             return Err("empty id or quote".into());
+        }
+        if review.anchor.span.is_some_and(|span| span < 2) {
+            return Err("invalid review span".into());
         }
         Ok(Some(review))
     })();
@@ -147,6 +161,10 @@ pub(crate) fn bind(doc: &mut Markdown, source: &str) {
     });
     for record in &mut doc.records {
         let anchor = &record.review.anchor;
+        if let Some(span) = anchor.span {
+            record.binding = bind_span(&doc.regions, &record.review, span, &lines);
+            continue;
+        }
         let near = doc
             .owners
             .partition_point(|owner| owner.source.end < record.source.start)
@@ -211,6 +229,7 @@ pub(crate) fn bind(doc: &mut Markdown, source: &str) {
             record.binding = Binding::Attached {
                 region,
                 selection,
+                tail: None,
                 line,
                 column,
                 bytes,
@@ -221,6 +240,111 @@ pub(crate) fn bind(doc: &mut Markdown, source: &str) {
             record.binding = Binding::Ambiguous;
         }
     }
+}
+
+fn bind_span(
+    regions: &[crate::markdown::Region],
+    review: &Review,
+    span: usize,
+    lines: &Lines,
+) -> Binding {
+    if span > regions.len() {
+        return Binding::Missing;
+    }
+    let mut best = None;
+    let mut tied = false;
+    for (index, window) in regions.windows(span).enumerate() {
+        let first = &window[0];
+        let last = &window[span - 1];
+        for (start, _) in first.text.char_indices() {
+            let Some(mut quote) = review.quote.strip_prefix(&first.text[start..]) else {
+                continue;
+            };
+            for region in &window[1..span - 1] {
+                let Some(rest) = quote
+                    .strip_prefix('\n')
+                    .and_then(|q| q.strip_prefix(&region.text))
+                else {
+                    quote = "";
+                    break;
+                };
+                quote = rest;
+            }
+            let Some(end) = quote
+                .strip_prefix('\n')
+                .filter(|end| !end.is_empty() && last.text.starts_with(end))
+            else {
+                continue;
+            };
+            let selection =
+                first.text[..start].encode_utf16().count()..first.text.encode_utf16().count();
+            let tail = 0..end.encode_utf16().count();
+            let Some((left, right)) = first
+                .source_selection(selection.clone())
+                .zip(last.source_selection(tail.clone()))
+            else {
+                continue;
+            };
+            if left.start > right.end {
+                continue;
+            }
+            let context = first.text[..start].ends_with(&review.anchor.prefix)
+                && last.text[end.len()..].starts_with(&review.anchor.suffix)
+                && (!review.anchor.prefix.is_empty() || start == 0)
+                && (!review.anchor.suffix.is_empty() || end.len() == last.text.len());
+            let heading = first.heading == review.anchor.heading;
+            if !context && !heading {
+                continue;
+            }
+            let rank = (context, heading, first.kind == review.anchor.block);
+            if best.as_ref().is_some_and(|(previous, _)| *previous > rank) {
+                continue;
+            }
+            tied = best.as_ref().is_some_and(|(previous, _)| *previous == rank);
+            let (line, column) = lines.position(left.start);
+            best = Some((
+                rank,
+                Binding::Attached {
+                    region: index,
+                    selection,
+                    tail: Some((index + span - 1, tail)),
+                    line,
+                    column,
+                    bytes: left.start..right.end,
+                    row: first.row,
+                    cell: first.cell,
+                },
+            ));
+        }
+    }
+    if tied {
+        Binding::Ambiguous
+    } else {
+        best.map_or(Binding::Missing, |(_, binding)| binding)
+    }
+}
+
+pub fn capture_span(
+    doc: &Markdown,
+    first: (usize, Range<usize>),
+    last: (usize, Range<usize>),
+) -> Option<(usize, String, Anchor)> {
+    if first.0 == last.0 {
+        return capture(doc, first.0, first.1);
+    }
+    let (.., first_quote, mut anchor) = capture(doc, first.0, first.1)?;
+    let (after, last_quote, end_anchor) = capture(doc, last.0, last.1)?;
+    let between = doc.regions.get(first.0 + 1..last.0)?;
+    let mut quote = first_quote;
+    for region in between {
+        quote.push('\n');
+        quote.push_str(&region.text);
+    }
+    quote.push('\n');
+    quote.push_str(&last_quote);
+    anchor.suffix = end_anchor.suffix;
+    anchor.span = Some(last.0 - first.0 + 1);
+    Some((after, quote, anchor))
 }
 
 pub fn capture(
@@ -250,8 +374,62 @@ pub fn capture(
         cell: r.cell,
         prefix: before[first..].to_owned(),
         suffix: after[..last].to_owned(),
+        span: None,
     };
     Some((doc.owners[r.owner].after, quote, anchor))
+}
+
+/// Project a Markdown source selection onto reviewable text, omitting Markdown delimiters.
+pub fn capture_source(doc: &Markdown, range: Bytes) -> Option<(usize, String, Anchor)> {
+    if range.is_empty()
+        || doc
+            .records
+            .iter()
+            .any(|record| record.source.start < range.end && range.start < record.source.end)
+    {
+        return None;
+    }
+    let mut parts = doc
+        .regions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, region)| {
+            let mut selected = region
+                .runs
+                .iter()
+                .flat_map(|run| &run.units)
+                .enumerate()
+                .filter_map(|(unit, source)| {
+                    let source = source.as_ref()?;
+                    (source.start < range.end && range.start < source.end).then_some(unit)
+                });
+            let start = selected.next()?;
+            let end = selected.last().unwrap_or(start) + 1;
+            Some((index, start..end))
+        });
+    let first = parts.next()?;
+    let last = parts.next_back().unwrap_or_else(|| first.clone());
+    capture_span(doc, first, last)
+}
+
+/// Move a record to its new owner as one undoable edit.
+pub fn relocate(source: &str, record: &Record, after: usize, updated: &Review) -> (Bytes, String) {
+    let old = record.source.clone();
+    if after <= old.start {
+        let new = insertion(source, after, updated);
+        (
+            after..old.end,
+            format!("{new}{}", &source[after..old.start]),
+        )
+    } else if after >= old.end {
+        let new = insertion(source, after, updated);
+        (
+            old.start..after,
+            format!("{}{new}", &source[old.end..after]),
+        )
+    } else {
+        (old, updated.encode())
+    }
 }
 
 pub fn insertion(source: &str, after: usize, review: &Review) -> String {

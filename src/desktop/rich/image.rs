@@ -5,10 +5,13 @@ use std::{
     path::{Component, Path, Prefix},
 };
 
+use base64::{Engine, engine::general_purpose::STANDARD};
+use resvg::tiny_skia;
 use windows::{
     Win32::{
         Graphics::Imaging::{
-            CLSID_WICImagingFactory, IWICImagingFactory, WICDecodeMetadataCacheOnDemand,
+            CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPRGBA, IWICImagingFactory,
+            WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand,
         },
         Storage::FileSystem::GetDriveTypeW,
         System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
@@ -16,10 +19,21 @@ use windows::{
     core::PCWSTR,
 };
 
-use crate::desktop::ui::decode_url;
+use crate::{
+    desktop::ui::decode_url,
+    images::{MAX_BYTES as MAX_COMPRESSED, rasterize_svg},
+};
 
-pub(super) fn embed(rtf: &mut String, directory: &Path, raw: &str) -> bool {
+pub(super) fn embed(rtf: &mut String, directory: Option<&Path>, raw: &str) -> bool {
     let Some((data, width, height, kind)) = load(directory, raw) else {
+        return false;
+    };
+    write_rtf(rtf, &data, width, height, kind, (width * 15).min(8_700));
+    true
+}
+
+pub(super) fn embed_bytes(rtf: &mut String, bytes: &[u8]) -> bool {
+    let Some((data, width, height, kind)) = decode(bytes.to_vec(), false) else {
         return false;
     };
     write_rtf(rtf, &data, width, height, kind, (width * 15).min(8_700));
@@ -48,11 +62,47 @@ pub(super) fn write_rtf(
     rtf.push('}');
 }
 
-fn load(directory: &Path, raw: &str) -> Option<(Vec<u8>, u32, u32, &'static str)> {
-    const REPARSE_POINT: u32 = 0x400;
-    const MAX_COMPRESSED: u64 = 8 * 1024 * 1024;
-    let path = decode_url(raw).ok()?;
+fn load(directory: Option<&Path>, raw: &str) -> Option<(Vec<u8>, u32, u32, &'static str)> {
+    if let Some(inline) = raw.strip_prefix("data:") {
+        let (media, encoded) = inline.split_once(',')?;
+        let (media, encoding) = media.split_once(';')?;
+        let media = media.to_ascii_lowercase();
+        if !encoding.eq_ignore_ascii_case("base64")
+            || !matches!(
+                media.as_str(),
+                "image/png"
+                    | "image/jpeg"
+                    | "image/gif"
+                    | "image/bmp"
+                    | "image/webp"
+                    | "image/tiff"
+                    | "image/x-icon"
+                    | "image/svg+xml"
+            )
+            || encoded.len() > MAX_COMPRESSED.div_ceil(3) * 4
+        {
+            return None;
+        }
+        let data = STANDARD.decode(encoded).ok()?;
+        if data.len() > MAX_COMPRESSED {
+            return None;
+        }
+        return decode(data, media == "image/svg+xml");
+    }
+    let (path, _) = raw.split_once('#').unwrap_or((raw, ""));
+    let path = decode_url(path).ok()?;
     let relative = Path::new(&path);
+    let data = read_relative(directory?, relative)?;
+    let svg = relative
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"));
+    decode(data, svg)
+}
+
+fn read_relative(directory: &Path, relative: &Path) -> Option<Vec<u8>> {
+    const REPARSE_POINT: u32 = 0x400;
+    let path = relative.to_str()?;
     if path.contains(':') || relative.has_root() {
         return None;
     }
@@ -67,7 +117,9 @@ fn load(directory: &Path, raw: &str) -> Option<(Vec<u8>, u32, u32, &'static str)
     if components.next()? != Component::RootDir {
         return None;
     }
-    let mut local = Path::new(prefix.as_os_str()).join("\\");
+    let mut volume = prefix.as_os_str().to_os_string();
+    volume.push("\\");
+    let mut local = std::path::PathBuf::from(volume);
     let root = local
         .as_os_str()
         .encode_wide()
@@ -91,30 +143,20 @@ fn load(directory: &Path, raw: &str) -> Option<(Vec<u8>, u32, u32, &'static str)
             _ => {}
         }
     }
-    let mut file = fs::File::open(&local).ok()?;
-    let meta = file.metadata().ok()?;
-    if !meta.is_file() || meta.len() > MAX_COMPRESSED {
-        return None;
+    crate::images::read_file(&local, MAX_COMPRESSED).ok()
+}
+
+fn decode(data: Vec<u8>, svg: bool) -> Option<(Vec<u8>, u32, u32, &'static str)> {
+    if svg {
+        let (png, width, height) = rasterize_svg(&data)?;
+        return Some((png, width, height, "pngblip"));
     }
-    let data = {
-        use std::io::Read;
-        let mut bytes = Vec::with_capacity(meta.len() as usize);
-        (&mut file)
-            .take(MAX_COMPRESSED + 1)
-            .read_to_end(&mut bytes)
-            .ok()?;
-        if bytes.len() as u64 > MAX_COMPRESSED {
-            return None;
-        }
-        bytes
-    };
     let kind = if data.starts_with(b"\x89PNG\r\n\x1a\n") {
-        "pngblip"
+        Some("pngblip")
     } else if data.starts_with(b"\xff\xd8\xff") {
-        "jpegblip"
+        Some("jpegblip")
     } else {
-        // shortcut: PNG and JPEG are embedded natively; other formats need a WIC-to-PNG path.
-        return None;
+        None
     };
     let mut width = 0;
     let mut height = 0;
@@ -126,13 +168,32 @@ fn load(directory: &Path, raw: &str) -> Option<(Vec<u8>, u32, u32, &'static str)
         let decoder = factory
             .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
             .ok()?;
-        decoder
-            .GetFrame(0)
-            .ok()?
-            .GetSize(&mut width, &mut height)
-            .ok()?;
-    }
+        let frame = decoder.GetFrame(0).ok()?;
+        frame.GetSize(&mut width, &mut height).ok()?;
+        if width == 0 || height == 0 || width > 8192 || height > 8192 || width * height > 16_000_000
+        {
+            return None;
+        }
+        if let Some(kind) = kind {
+            return Some((data, width, height, kind));
+        }
 
-    (width > 0 && height > 0 && width <= 8192 && height <= 8192 && width * height <= 16_000_000)
-        .then_some((data, width, height, kind))
+        let converter = factory.CreateFormatConverter().ok()?;
+        converter
+            .Initialize(
+                &frame,
+                &GUID_WICPixelFormat32bppPRGBA,
+                WICBitmapDitherTypeNone,
+                None,
+                0.0,
+                WICBitmapPaletteTypeCustom,
+            )
+            .ok()?;
+        let mut pixels = tiny_skia::Pixmap::new(width, height)?;
+        converter
+            .CopyPixels(std::ptr::null(), width * 4, pixels.data_mut())
+            .ok()?;
+        let png = pixels.encode_png().ok()?;
+        (png.len() <= MAX_COMPRESSED).then_some((png, width, height, "pngblip"))
+    }
 }

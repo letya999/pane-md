@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a reproducible problem with pane-md.
+title: "Bug: "
+body:
+  - type: markdown
+    attributes:
+      value: For vulnerabilities, use the private reporting link instead. Remove private document content and credentials from examples.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - Linux
+        - macOS
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Paste the output of `pane-md --version` or the commit ID.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use a minimal, sanitized Markdown example if needed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true

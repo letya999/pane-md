@@ -5,14 +5,14 @@ use std::{
     path::Path,
 };
 
-use notepad_md::{
+use pane_md::{
     markdown::{Layout, Markdown, Region, Run, Style},
     review::Binding,
     source_view,
 };
 use windows::{
     Win32::{
-        Foundation::{COLORREF, HWND, LPARAM, POINT, RECT, WPARAM},
+        Foundation::{HWND, LPARAM, POINT, RECT, WPARAM},
         UI::{
             Controls::{
                 EM_CHARFROMPOS, EM_GETRECT, EM_POSFROMCHAR, EM_SCROLLCARET, EM_SETRECT, RichEdit::*,
@@ -124,8 +124,6 @@ pub fn margins(hwnd: HWND, width: i32, height: i32, margin: i32, dpi: i32) {
         bottom: (height - 6).max(30),
     };
     send(hwnd, EM_SETRECT, 0, &rect as *const _ as isize);
-    // A null device and zero width wrap prose to the formatting rectangle.
-    send(hwnd, EM_SETTARGETDEVICE, 0, 0);
 }
 
 pub fn stream(hwnd: HWND, rtf: &str) -> bool {
@@ -160,82 +158,8 @@ unsafe extern "system" fn read_rtf(
     0
 }
 
-#[derive(Clone, Copy)]
-pub struct Palette {
-    pub canvas: u32,
-    pub frame: u32,
-    pub text: u32,
-    pub muted: u32,
-    pub line: u32,
-    pub accent: u32,
-    pub highlight: u32,
-    pub marked: u32,
-    pub header: u32,
-    stripe: u32,
-}
-
-impl Palette {
-    pub fn new(dark: bool) -> Self {
-        if dark {
-            Self {
-                canvas: 0x1e2125,
-                frame: 0x282c31,
-                text: 0xe5e9ed,
-                muted: 0xb5bec7,
-                line: 0x535c65,
-                accent: 0x87c7f3,
-                highlight: 0x604a28,
-                marked: 0x514e29,
-                header: 0x2d353d,
-                stripe: 0x24282d,
-            }
-        } else {
-            Self {
-                canvas: 0xffffff,
-                frame: 0xf2f4f6,
-                text: 0x232a31,
-                muted: 0x535f6b,
-                line: 0xcbd2d9,
-                accent: 0x17568a,
-                highlight: 0xffdf9e,
-                marked: 0xfff2b7,
-                header: 0xeaf0f4,
-                stripe: 0xf7f9fb,
-            }
-        }
-    }
-
-    pub fn rgb(rgb: u32) -> COLORREF {
-        COLORREF(((rgb & 255) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 255))
-    }
-
-    pub fn rtf(self) -> String {
-        let mut out = String::from(
-            r"{\rtf1\ansi\ansicpg1252\uc1\deff0{\fonttbl{\f0\fnil Segoe UI;}{\f1\fmodern Consolas;}}{\colortbl;",
-        );
-        for color in [
-            self.text,
-            self.accent,
-            self.highlight,
-            self.marked,
-            self.line,
-            self.header,
-            self.muted,
-            self.canvas,
-            self.stripe,
-        ] {
-            let _ = write!(
-                out,
-                "\\red{}\\green{}\\blue{};",
-                color >> 16,
-                (color >> 8) & 255,
-                color & 255
-            );
-        }
-        out.push_str("}\n");
-        out
-    }
-}
+use super::theme::{EditorStyle, RICH_SIZE, SOURCE_SIZE};
+use super::ui::RemoteImages;
 
 #[derive(Default)]
 pub struct Projection {
@@ -246,6 +170,7 @@ pub struct Projection {
     pub source: Vec<Option<usize>>,
     pub diagram_regions: HashSet<usize>,
     pub diagram_fallbacks: usize,
+    pub diagram_pending: usize,
 }
 
 impl Projection {
@@ -276,6 +201,123 @@ impl Projection {
             }
         }
         None
+    }
+
+    pub fn edit_parts(
+        &self,
+        doc: &Markdown,
+        selection: Range<usize>,
+    ) -> Option<Vec<(usize, Range<usize>)>> {
+        let left = self
+            .region
+            .partition_point(|span| span.end < selection.start);
+        let mut right = self.region.partition_point(|span| span.end < selection.end);
+        if self
+            .region
+            .get(right)
+            .is_none_or(|span| selection.end < span.start)
+        {
+            // RichEdit expands a selection across columns to whole cells and their terminators.
+            right = right.checked_sub(1)?;
+        }
+        let first = self.region.get(left)?;
+        let last = self.region.get(right)?;
+        if selection.start < first.start || last.end < selection.end {
+            let start_table = doc.regions.get(left)?;
+            let end_table = doc.regions.get(right)?;
+            let terminators = |range: Range<usize>| {
+                range.is_empty()
+                    || self.text.get(range).is_some_and(|units| {
+                        units.iter().all(|u| matches!(u, 7 | 13 | 0xfff9..=0xfffb))
+                    })
+            };
+            if left > right
+                || start_table.cell.is_none()
+                || end_table.cell.is_none()
+                || start_table.owner != end_table.owner
+                || !terminators(selection.start..first.start)
+                || !terminators(last.end..selection.end)
+            {
+                return None;
+            }
+        }
+        (left..=right)
+            .map(|i| {
+                let span = &self.region[i];
+                if self.diagram_regions.contains(&i) {
+                    return None;
+                }
+                let start = selection.start.max(span.start) - span.start;
+                let end = selection.end.min(span.end) - span.start;
+                Some((i, self.semantic_at(i, start)..self.semantic_at(i, end)))
+            })
+            .collect()
+    }
+
+    pub fn review_parts<'a>(
+        &'a self,
+        doc: &'a Markdown,
+        selection: Range<usize>,
+    ) -> impl DoubleEndedIterator<Item = (usize, Range<usize>)> + 'a {
+        let source = self.source_selection(doc, selection.clone());
+        doc.regions
+            .iter()
+            .enumerate()
+            .filter_map(move |(i, region)| {
+                let range = if self.source.is_empty() {
+                    let span = self.region.get(i)?;
+                    if self.diagram_regions.contains(&i) {
+                        return None;
+                    }
+                    let a = selection.start.max(span.start);
+                    let b = selection.end.min(span.end);
+                    if a >= b {
+                        return None;
+                    }
+                    self.semantic_at(i, a - span.start)..self.semantic_at(i, b - span.start)
+                } else {
+                    if region.source.end <= source.start || source.end <= region.source.start {
+                        return None;
+                    }
+                    let matches = |range: &Option<Range<usize>>| {
+                        range
+                            .as_ref()
+                            .is_some_and(|r| r.start < source.end && source.start < r.end)
+                    };
+                    let units = region.runs.iter().flat_map(|run| &run.units);
+                    let a = units.clone().position(matches)?;
+                    let b = units
+                        .enumerate()
+                        .filter(|(_, unit)| matches(unit))
+                        .last()?
+                        .0
+                        + 1;
+                    a..b
+                };
+                region.source_selection(range.clone())?;
+                Some((i, range))
+            })
+    }
+
+    pub fn review_range(&self, doc: &Markdown, binding: &Binding) -> Option<Range<usize>> {
+        let Binding::Attached {
+            region,
+            selection,
+            tail,
+            bytes,
+            ..
+        } = binding
+        else {
+            return None;
+        };
+        if !self.source.is_empty() {
+            return Some(self.visible_at(doc, bytes.start)..self.visible_at(doc, bytes.end));
+        }
+        let (last, end) = tail
+            .as_ref()
+            .map_or((*region, selection.end), |(i, range)| (*i, range.end));
+        (last < self.region.len())
+            .then(|| self.native_at(*region, selection.start)..self.native_at(last, end))
     }
 
     fn semantic_at(&self, region: usize, local: usize) -> usize {
@@ -354,14 +396,27 @@ impl Projection {
 
     pub fn visible_at(&self, doc: &Markdown, byte: usize) -> usize {
         if !self.source.is_empty() {
-            return self
-                .source
-                .iter()
-                .position(|point| point.is_some_and(|at| at >= byte))
-                .unwrap_or(self.text.len());
+            let (mut left, mut right) = (0, self.source.len());
+            while left < right {
+                let middle = left + (right - left) / 2;
+                let at = self.source[middle].unwrap_or_else(|| self.source[middle + 1].unwrap());
+                if at < byte {
+                    left = middle + 1;
+                } else {
+                    right = middle;
+                }
+            }
+            return if self.source.get(left) == Some(&None) {
+                left + 1
+            } else {
+                left.min(self.text.len())
+            };
         }
         let index = doc.regions.partition_point(|r| r.source.end < byte);
         if let Some((span, r)) = self.region.get(index).zip(doc.regions.get(index)) {
+            if r.list.is_some() && r.source.is_empty() {
+                return span.end;
+            }
             if self.diagram_regions.contains(&index) {
                 return if byte == r.source.end {
                     span.end
@@ -391,43 +446,126 @@ mod image;
 mod live;
 mod mermaid;
 pub(super) use live::{apply_plain_edit, fit_new_paragraph, fit_trimmed_spaces};
-pub(super) use mermaid::Diagrams;
-pub fn source_rtf(text: &[u16], palette: Palette) -> String {
-    let mut rtf = palette.rtf();
-    rtf.push_str(r"\pard\f1\fs23\cf1 ");
-    escaped(&mut rtf, text);
+pub(super) use mermaid::{Diagrams, prepare_diagrams};
+pub fn source_rtf(
+    view: &Projection,
+    doc: &Markdown,
+    style: &EditorStyle<'_>,
+    show_reviews: bool,
+) -> String {
+    let mut rtf = style.rtf();
+    let _ = write!(rtf, "\\pard\\f1\\fs{}\\cf1 ", style.source.half_points);
+    let mut events = Vec::<(usize, usize, i32)>::new();
+    let mut style = |range: Range<usize>, kind| {
+        if range.start < range.end && range.end <= view.text.len() {
+            events.extend([(range.start, kind, 1), (range.end, kind, -1)]);
+        }
+    };
+    for region in doc.regions.iter().filter(|region| region.level > 0) {
+        let start = view.visible_at(doc, region.source.start);
+        let end = start
+            + view.text[start..]
+                .iter()
+                .take_while(|&&unit| unit == 35)
+                .count();
+        if end > start {
+            style(start..end, 0);
+            let line_end = start
+                + view.text[start..]
+                    .iter()
+                    .take_while(|&&unit| unit != 13)
+                    .count();
+            style(start..line_end, 3);
+        }
+    }
+    for link in &doc.source_links {
+        style(
+            view.visible_at(doc, link.source.start)..view.visible_at(doc, link.source.end),
+            0,
+        );
+    }
+    for record in &doc.records {
+        style(
+            view.visible_at(doc, record.source.start)..view.visible_at(doc, record.source.end),
+            1,
+        );
+        if show_reviews && let Some(span) = view.review_range(doc, &record.binding) {
+            style(span, 2);
+        }
+    }
+    events.sort_unstable();
+    let mut cursor = 0;
+    let mut active = [0; 4];
+    for (at, kind, delta) in events {
+        if at > cursor {
+            source_run(&mut rtf, &view.text[cursor..at], active);
+            cursor = at;
+        }
+        active[kind] += delta;
+    }
+    source_run(&mut rtf, &view.text[cursor..], active);
     // Keep a last empty source line in the control, even at EOF.
-    if text.last() == Some(&13) {
+    if view.text.last() == Some(&13) {
         rtf.push_str(r"\par ");
     }
     rtf.push('}');
     rtf
 }
 
+fn source_run(rtf: &mut String, units: &[u16], active: [i32; 4]) {
+    let color = if active[1] > 0 {
+        7
+    } else if active[0] > 0 {
+        2
+    } else {
+        1
+    };
+    let highlight = if active[2] > 0 { 3 } else { 0 };
+    let bold = if active[3] > 0 { "\\b" } else { "\\b0" };
+    let _ = write!(rtf, "\\cf{color}\\highlight{highlight}{bold} ");
+    escaped(rtf, units);
+}
+
 pub fn render(
     doc: &Markdown,
-    palette: Palette,
+    style: &EditorStyle<'_>,
     prose_width: i32,
-    directory: &Path,
-    diagrams: &mut Diagrams,
-    dark: bool,
+    directory: Option<&Path>,
+    diagrams: &Diagrams,
+    remote_images: &RemoteImages,
+    show_reviews: bool,
 ) -> (String, Projection) {
-    let mut rtf = palette.rtf();
+    let mut rtf = style.rtf();
+    let rich_size = |size| (size * style.rich.half_points + RICH_SIZE / 2) / RICH_SIZE;
+    let code_size = (22 * style.source.half_points + SOURCE_SIZE / 2) / SOURCE_SIZE;
+    let code_spacing = 315 * code_size / 22;
     let mut view = Projection {
         region: vec![0..0; doc.regions.len()],
         ..Projection::default()
     };
     let mut highlights = HashMap::<usize, Vec<Range<usize>>>::new();
     for record in &doc.records {
-        if record.review.status == notepad_md::review::Status::Open
+        if show_reviews
             && let Binding::Attached {
-                region, selection, ..
+                region,
+                selection,
+                tail,
+                ..
             } = &record.binding
         {
             highlights
                 .entry(*region)
                 .or_default()
                 .push(selection.clone());
+            if let Some((last, finish)) = tail {
+                for index in region + 1..*last {
+                    highlights
+                        .entry(index)
+                        .or_default()
+                        .push(0..doc.regions[index].text.encode_utf16().count());
+                }
+                highlights.entry(*last).or_default().push(finish.clone());
+            }
         }
     }
     let mut previous_was_paragraph = false;
@@ -440,22 +578,26 @@ pub fn render(
         match block {
             Layout::Text(index) => {
                 let region = &doc.regions[*index];
-                let picture = region
-                    .mermaid
-                    .then(|| diagrams.picture(&region.text, dark))
-                    .flatten();
-                view.diagram_fallbacks += usize::from(region.mermaid && picture.is_none());
-                let size = match region.level {
-                    0 => 25,
-                    1 => 46,
-                    2 => 36,
+                let (picture, pending) = if region.mermaid {
+                    diagrams.picture(&region.text)
+                } else {
+                    (None, false)
+                };
+                view.diagram_pending += usize::from(pending);
+                view.diagram_fallbacks +=
+                    usize::from(region.mermaid && !pending && picture.is_none());
+                let size = rich_size(match region.level {
+                    0 => RICH_SIZE,
+                    1 => 56,
+                    2 => 43,
                     3 => 30,
                     _ => 27,
-                };
-                let before = if region.level != 0 { 240 } else { 0 };
-                let after = match region.kind {
-                    "list" | "quote" => 64,
-                    _ => 148,
+                });
+                let before = if region.level != 0 { 260 } else { 0 };
+                let after = match (region.level, region.kind) {
+                    (1, _) => 225,
+                    (_, "list" | "quote") => 64,
+                    _ => 165,
                 };
                 let _ = write!(
                     rtf,
@@ -469,7 +611,10 @@ pub fn render(
                     rtf.push_str(r"\brdrl\brdrs\brdrw20\brdrcf5\brsp95\cf7 ");
                 }
                 if picture.is_none() && matches!(region.kind, "code" | "html") {
-                    rtf.push_str(r"\f1\fs22\shading10000\cbpat6\li220\ri220 ");
+                    let _ = write!(
+                        rtf,
+                        "\\f1\\fs{code_size}\\sb105\\sa140\\sl{code_spacing}\\slmult0\\shading10000\\cbpat6\\li220\\ri220 "
+                    );
                 }
                 if let Some(picture) = picture {
                     let start = view.text.len();
@@ -486,6 +631,7 @@ pub fn render(
                     region,
                     highlights.get(index),
                     directory,
+                    remote_images,
                 );
             }
             Layout::Rule => {
@@ -528,7 +674,11 @@ pub fn render(
                     rtf.push('\n');
                     view.text.extend([0xfff9, 13]);
                     for (col, index) in row.iter().enumerate() {
-                        rtf.push_str(r"\pard\plain\intbl\f0\cf1\fs22\sb35\sa45");
+                        let _ = write!(
+                            rtf,
+                            "\\pard\\plain\\intbl\\f0\\cf1\\fs{}\\sb35\\sa45",
+                            rich_size(22)
+                        );
                         rtf.push_str(match alignment[col] {
                             comrak::nodes::TableAlignment::Center => r"\qc ",
                             comrak::nodes::TableAlignment::Right => r"\qr ",
@@ -541,6 +691,7 @@ pub fn render(
                             &doc.regions[*index],
                             highlights.get(index),
                             directory,
+                            remote_images,
                         );
                         rtf.push_str("\\cell\n");
                         view.text.push(7);
@@ -550,6 +701,13 @@ pub fn render(
                 }
             }
         }
+    }
+    if view.text.last() == Some(&13)
+        && let Some(Layout::Text(index)) = doc.layout.last()
+        && doc.regions[*index].text.is_empty()
+        && doc.regions[*index].source.is_empty()
+    {
+        rtf.push_str(r"\par ");
     }
     rtf.push('}');
     (rtf, view)
@@ -561,7 +719,8 @@ fn render_region(
     index: usize,
     region: &Region,
     highlights: Option<&Vec<Range<usize>>>,
-    directory: &Path,
+    directory: Option<&Path>,
+    remote_images: &RemoteImages,
 ) {
     let start = view.text.len();
     let mut semantic = 0;
@@ -570,7 +729,10 @@ fn render_region(
     for run in &region.runs {
         let at = view.text.len();
         if let Some(image) = &run.image
-            && image::embed(rtf, directory, image)
+            && match remote_images.picture(image) {
+                Some(bytes) => image::embed_bytes(rtf, bytes),
+                None => image::embed(rtf, directory, image),
+            }
         {
             view.text.push(0xfffc);
             translated.push(semantic + run.units.len());
@@ -580,7 +742,16 @@ fn render_region(
             translated.extend(semantic + 1..=semantic + run.units.len());
         }
         semantic += run.units.len();
-        if let Some(link) = &run.link {
+        if let Some(image) = &run.image
+            && remote_images.picture(image).is_none()
+            && matches!(
+                pane_md::links::destination(image),
+                Ok(pane_md::links::Destination::External(_))
+            )
+        {
+            view.links
+                .push((at..view.text.len(), format!("image:{image}")));
+        } else if let Some(link) = &run.link {
             view.links.push((at..view.text.len(), link.clone()));
         } else if let Some(image) = &run.image {
             view.links

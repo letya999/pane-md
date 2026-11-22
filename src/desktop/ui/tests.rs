@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 fn index(text: &[u16], needle: &str) -> Range<usize> {
     let units = needle.encode_utf16().collect::<Vec<_>>();
@@ -9,8 +10,35 @@ fn index(text: &[u16], needle: &str) -> Range<usize> {
     at..at + units.len()
 }
 
-#[test]
-fn rich_edit_native_round_trip() -> Result<()> {
+fn wait_diagrams(app: &mut App) {
+    let start = std::time::Instant::now();
+    while app.view.diagram_pending != 0 {
+        let mut message = MSG::default();
+        if unsafe {
+            PeekMessageW(
+                &mut message,
+                Some(app.hwnd),
+                WM_DIAGRAM_READY,
+                WM_DIAGRAM_READY,
+                PM_REMOVE,
+            )
+            .as_bool()
+        } {
+            app.message(message.message, message.wParam, message.lParam);
+        } else {
+            assert!(
+                start.elapsed().as_secs() < 10,
+                "diagram worker did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
+unsafe fn test_window(width: i32) -> Result<(MutexGuard<'static, ()>, HWND, App)> {
+    // These tests send focus and mouse-capture messages to the same desktop.
+    static DESKTOP: Mutex<()> = Mutex::new(());
+    let desktop = DESKTOP.lock().unwrap_or_else(PoisonError::into_inner);
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         LoadLibraryW(w!("msftedit.dll"))?;
@@ -24,11 +52,11 @@ fn rich_edit_native_round_trip() -> Result<()> {
         let parent = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             w!("STATIC"),
-            w!("notepad-md test"),
+            w!("pane-md test"),
             WS_OVERLAPPEDWINDOW,
             100,
             100,
-            900,
+            width,
             700,
             None,
             None,
@@ -36,6 +64,15 @@ fn rich_edit_native_round_trip() -> Result<()> {
             None,
         )?;
         let mut app = App::new(parent, instance, false)?;
+        app.apply_appearance(EditorAppearance::default());
+        Ok((desktop, parent, app))
+    }
+}
+
+#[test]
+fn rich_edit_native_round_trip() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(900)?;
         let files = tempfile::tempdir()?;
         let path = files.path().join("Мой документ.md");
         let nested = files.path().join("docs");
@@ -81,12 +118,58 @@ fn rich_edit_native_round_trip() -> Result<()> {
         app.follow_at(index(&rich_before, "Перейти").start);
         assert_eq!(app.docs.len(), 2);
         assert_eq!(
-            app.docs[app.active.unwrap()].path.file_name().unwrap(),
+            app.docs[app.active.unwrap()]
+                .path()
+                .and_then(Path::file_name)
+                .unwrap(),
             "guide.md"
         );
         assert_ne!(selection(app.editor).start, 0);
+        app.command(OUTLINE);
+        assert_eq!(send(app.outline_list, LB_GETCOUNT, 0, 0), 2);
+        send(app.outline_list, LB_SETCURSEL, 0, 0);
+        app.jump_outline();
+        assert_eq!(
+            selection(app.editor).start,
+            index(&buffer(app.editor), "Начало").start
+        );
+        send(app.outline_list, LB_SETCURSEL, 1, 0);
+        app.jump_outline();
+        assert_eq!(
+            selection(app.editor).start,
+            index(&buffer(app.editor), "Якорь").start
+        );
+        let resize = |width| {
+            SetWindowPos(
+                parent,
+                None,
+                0,
+                0,
+                width,
+                700,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        };
+        let visible = |hwnd| GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_VISIBLE.0 != 0;
+        resize(app.dip(580))?;
+        app.command(COMMENTS);
+        assert!(!visible(app.outline_list));
+        assert!(visible(app.review_actions[0]));
+        app.command(OUTLINE);
+        assert!(visible(app.outline_list));
+        assert!(!visible(app.review_actions[0]));
+        resize(app.dip(1060))?;
+        app.layout();
         app.command(BACK);
         assert_eq!(app.active, Some(0));
+
+        let span = index(&buffer(app.editor), "Ж😀");
+        select(app.editor, span.clone(), false);
+        app.command(MODES + 2);
+        assert_eq!(selection(app.editor), span);
+        app.command(MODES);
+        assert_eq!(selection(app.editor), span);
+        assert_eq!(buffer(app.editor), rich_before);
 
         app.command(MODES + 1);
         assert!(app.projection_safe, "source projection at EOF");
@@ -150,6 +233,47 @@ fn rich_edit_native_round_trip() -> Result<()> {
         assert!(app.docs[0].text.contains("_next_"));
         assert_eq!(fs::read_to_string(&path)?, "external write");
 
+        let review_doc = files.path().join("Multi-line review.md");
+        fs::write(&review_doc, "# Lead\n\nFirst Ж😀\n\nNext P85 and tail")?;
+        app.open(review_doc.clone(), 0)?;
+        assert_eq!(app.display_state(), COMMENTS);
+        app.command(COMMENTS);
+        let displayed = buffer(app.editor);
+        let first = index(&displayed, "Ж😀");
+        let last = index(&displayed, "P85");
+        select(app.editor, first.start..last.end, false);
+        app.command(ADD_REVIEW);
+        let long_note = "Полный текст 😀 --> ".repeat(300);
+        set_text(app.draft_box, &long_note);
+        app.command(REVIEW_SAVE);
+        let selected = &app.parsed.records[0].review;
+        assert_eq!(selected.quote, "Ж😀\nNext P85");
+        let created = selected.updated_at.expect("timestamp on a new comment");
+        assert!(get_text(app.review_text).contains(long_note.trim()));
+        app.command(REVIEW_COLLAPSE);
+        assert!(!app.review_expanded);
+        assert_eq!(app.card_rows, [0]);
+        assert!(get_text(app.review_cards[0].body).chars().count() < 200);
+        app.command(CARD_BASE);
+        app.command(REVIEW_DETAILS);
+        assert!(app.review_expanded);
+        assert!(get_text(app.review_text).contains(long_note.trim()));
+        app.command(EDIT_REVIEW);
+        set_text(app.draft_box, "Уточнение");
+        app.command(SAVE);
+        let updated = Markdown::parse(&fs::read_to_string(&review_doc)?);
+        assert_eq!(updated.records[0].review.text, "Уточнение");
+        assert!(updated.records[0].review.updated_at.unwrap() >= created);
+        app.command(READ);
+        assert!(!app.reviews_visible());
+        assert!(!app.show_review_marks());
+        app.command(FAMILY);
+        assert_eq!(app.mode(), 1);
+        assert_eq!(app.display_state(), READ);
+        app.command(COMMENTS);
+        assert!(app.reviews_visible());
+        assert_eq!(app.mode(), 1);
+
         let picture = files.path().join("pixel.png");
         fs::write(
             &picture,
@@ -161,10 +285,30 @@ fn rich_edit_native_round_trip() -> Result<()> {
                 0xed, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
             ],
         )?;
+        let mut bmp = [0u8; 58];
+        bmp[..2].copy_from_slice(b"BM");
+        bmp[2..6].copy_from_slice(&58u32.to_le_bytes());
+        bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bmp[18..22].copy_from_slice(&1u32.to_le_bytes());
+        bmp[22..26].copy_from_slice(&1u32.to_le_bytes());
+        bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+        bmp[34..38].copy_from_slice(&4u32.to_le_bytes());
+        bmp[54..58].copy_from_slice(&[0x11, 0x33, 0x99, 0]);
+        fs::write(files.path().join("pixel one.bmp"), bmp)?;
+        fs::write(
+            files.path().join("simple.svg"),
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"><rect width="12" height="8" fill="red"/></svg>"#,
+        )?;
+        use base64::{Engine, engine::general_purpose::STANDARD};
         let image_doc = files.path().join("image.md");
         fs::write(
             &image_doc,
-            "Before ![local](pixel.png) after. ![remote](https://example.invalid/no.png)",
+            format!(
+                "Before ![local](pixel.png) after.\n\n![bitmap](pixel%20one.bmp) ![vector](simple.svg) ![inline](data:image/bmp;base64,{})\n\n![remote](https://example.invalid/no.png)",
+                STANDARD.encode(bmp)
+            ),
         )?;
         app.open(image_doc, 0)?;
         assert!(app.projection_safe);
@@ -173,7 +317,7 @@ fn rich_edit_native_round_trip() -> Result<()> {
                 .iter()
                 .filter(|&&unit| unit == 0xfffc)
                 .count(),
-            1
+            4
         );
         assert!(String::from_utf16_lossy(&buffer(app.editor)).contains("[remote]"));
         let span = index(&buffer(app.editor), "after");
@@ -289,14 +433,23 @@ fn rich_edit_native_round_trip() -> Result<()> {
 ```mermaid\r\nflowchart LR\r\n A[Запрос] --> B[Ответ]\r\n```\r\n\r\n\
 | A | B |\r\n| --- | --- |\r\n| 1 | 2 |\r\n\r\n\
 ~~~Mermaid\r\nsequenceDiagram\r\n Client->>Server: Проверка\r\n~~~\r\n\r\n\
+```mermaid\r\nvenn-beta\r\n  set A[\"Редактор\"]:7\r\n  set B[\"Терминал\"]:5\r\n  union A,B[\"Общее\"]:2\r\n```\r\n\r\n\
 ```mermaid\r\nunsupportedDiagram\r\n```\r\n";
         fs::write(&path, original)?;
         app.open(path.clone(), 0)?;
         assert!(app.projection_safe);
-        assert_eq!(app.view.diagram_regions.len(), 2);
+        assert_eq!(app.view.diagram_pending, 4);
+        select(app.editor, index(&buffer(app.editor), "Диаграммы"), false);
+        wait_diagrams(&mut app);
+        assert!(app.projection_safe);
+        assert_eq!(
+            selection(app.editor),
+            index(&buffer(app.editor), "Диаграммы")
+        );
+        assert_eq!(app.view.diagram_regions.len(), 3);
         assert_eq!(app.view.diagram_fallbacks, 1);
         let native = buffer(app.editor);
-        assert_eq!(native.iter().filter(|&&unit| unit == 0xfffc).count(), 2);
+        assert_eq!(native.iter().filter(|&&unit| unit == 0xfffc).count(), 3);
         assert!(native.contains(&7)); // Native RichEdit table cell boundary.
         assert!(String::from_utf16_lossy(&native).contains("unsupportedDiagram"));
         assert!(!String::from_utf16_lossy(&native).contains("flowchart LR"));
@@ -318,9 +471,1068 @@ fn rich_edit_native_round_trip() -> Result<()> {
         app.sync();
         assert_eq!(buffer(app.editor), native);
         assert_eq!(fs::read(&path)?, original.as_bytes());
-        app.command(THEME);
+        app.theme_choice = if app.dark { THEME_LIGHT } else { THEME_DARK };
+        app.theme();
+        app.refresh_viewport();
         assert!(app.projection_safe);
-        assert_eq!(app.view.diagram_regions.len(), 2);
+        assert_eq!(app.view.diagram_pending, 4);
+        let heading = index(&buffer(app.editor), "Диаграммы");
+        select(app.editor, heading.clone(), false);
+        send(
+            app.editor,
+            EM_REPLACESEL,
+            1,
+            super::wide("Схемы").as_ptr() as isize,
+        );
+        app.message(
+            WM_COMMAND,
+            WPARAM(ID_DOCUMENT | ((EN_CHANGE as usize) << 16)),
+            LPARAM(app.editor.0 as isize),
+        );
+        wait_diagrams(&mut app);
+        assert!(app.projection_safe);
+        assert_eq!(app.view.diagram_regions.len(), 3);
+        assert_eq!(app.view.diagram_fallbacks, 1);
+        assert_eq!(
+            app.docs[app.active.unwrap()].text,
+            original
+                .trim_start_matches('\u{feff}')
+                .replace("Диаграммы", "Схемы")
+        );
+        assert_eq!(fs::read(&path)?, original.as_bytes());
+        app.command(UNDO);
+        assert_eq!(
+            app.docs[app.active.unwrap()].text,
+            original.trim_start_matches('\u{feff}')
+        );
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn workspace_components_follow_the_review_mockups() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1440)?;
+        let files = tempfile::tempdir()?;
+        let path = files.path().join("README.md");
+        let other = files.path().join("PROMPT.md");
+        let content = "# pane-md\n\n## Сборка и запуск\n\nUse Windows SDK.\n\nOpen with Ctrl+O.\n\n## Ревью\n\nSelect text.\n";
+        fs::write(&path, content)?;
+        fs::write(&other, "# Prompt\n")?;
+        app.open(path.clone(), 0)?;
+        app.open(other, 0)?;
+        assert_eq!(send(app.tab, TCM_GETITEMCOUNT, 0, 0), 2);
+        app.switch(0);
+        assert_eq!(app.active, Some(0));
+        assert!(!app.find_open);
+
+        let visible = |hwnd| GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_VISIBLE.0 != 0;
+        let bounds = |hwnd| {
+            let mut rect = RECT::default();
+            GetWindowRect(hwnd, &mut rect).unwrap();
+            rect
+        };
+        let menu = GetMenu(parent);
+        assert_eq!(GetMenuItemCount(Some(menu)), 5);
+        let settings = GetSubMenu(menu, 4);
+        assert_ne!(
+            GetMenuState(settings, LANG_EN as u32, MF_BYCOMMAND),
+            u32::MAX
+        );
+        assert_ne!(
+            GetMenuState(settings, THEME_DARK as u32, MF_BYCOMMAND),
+            u32::MAX
+        );
+        let appearance = GetSubMenu(settings, 3);
+        assert_eq!(GetMenuItemCount(Some(appearance)), 6);
+        assert_ne!(
+            GetMenuState(appearance, RICH_FONT as u32, MF_BYCOMMAND),
+            u32::MAX
+        );
+        assert_ne!(
+            GetMenuState(GetSubMenu(menu, 3), ROW_ADD as u32, MF_BYCOMMAND),
+            u32::MAX
+        );
+
+        app.command(COMMENTS);
+        app.command(OUTLINE);
+        assert!(visible(app.outline_list));
+        assert!(visible(app.review_toggle));
+        assert!(!visible(app.find_box));
+        assert_eq!(
+            bounds(app.outline_toggle).top,
+            bounds(app.review_toggle).top
+        );
+        assert_eq!(bounds(app.outline_toggle).top, bounds(app.bar.rich).top);
+        assert!(bounds(app.tab).bottom <= bounds(app.bar.rich).top);
+        assert!(bounds(app.zoom_buttons[1]).right <= bounds(app.zoom_buttons[0]).left);
+        let open_width = app.content_width;
+        assert!(!String::from_utf16_lossy(&buffer(app.editor)).contains("## Сборка"));
+        app.message(
+            WM_COMMAND,
+            WPARAM(VIEW_SOURCE),
+            LPARAM(app.bar.source.0 as isize),
+        );
+        assert_eq!(app.display_state(), COMMENTS);
+        assert_eq!(app.mode(), 1);
+        assert_eq!(app.source_lines[2], "# pane-md\r\r".encode_utf16().count());
+        assert!(String::from_utf16_lossy(&buffer(app.editor)).contains("## Сборка"));
+        app.message(
+            WM_COMMAND,
+            WPARAM(VIEW_RICH),
+            LPARAM(app.bar.rich.0 as isize),
+        );
+        assert_eq!(app.mode(), 0);
+        app.command(VIEW_SOURCE);
+        app.message(
+            WM_COMMAND,
+            WPARAM(OUTLINE),
+            LPARAM(app.outline_toggle.0 as isize),
+        );
+        assert!(!visible(app.outline_list));
+        assert!(visible(app.outline_toggle));
+        assert_eq!(get_text(app.outline_toggle), tr(L::ShowOutline));
+        assert!(app.content_width > open_width + app.dip(100));
+
+        for (quote, comment) in [
+            ("Windows SDK", "Уточнить версию SDK."),
+            ("Ctrl+O", "Добавить сочетание для открытия папки."),
+            ("Ревью", "Пояснить, где хранятся комментарии."),
+        ] {
+            select(app.editor, index(&buffer(app.editor), quote), false);
+            app.command(ADD_REVIEW);
+            assert!(visible(app.draft_box), "{quote}");
+            set_text(app.draft_box, comment);
+            app.command(REVIEW_SAVE);
+        }
+        assert_eq!(app.card_rows, [0, 1, 2]);
+        let source = String::from_utf16_lossy(&buffer(app.editor));
+        assert_eq!(source.matches("<!-- pane-md:review").count(), 3);
+        app.command(SAVE);
+        let persisted = fs::read_to_string(&path)?;
+
+        app.command(CARD_BASE);
+        app.command(EDIT_REVIEW);
+        assert!(app.draft_frame.is_some());
+        assert!(bounds(app.draft_box).bottom <= bounds(app.review_cards[0].body).top);
+        assert!(bounds(app.draft_actions[1]).right <= bounds(app.draft_actions[0]).left);
+        assert_eq!(app.card_rows, [1, 2]);
+        assert!(visible(app.review_cards[0].body) && visible(app.review_cards[1].body));
+        assert!(get_text(app.draft_quote).contains("Windows SDK"));
+        assert_eq!(
+            &buffer(app.editor)[selection(app.editor)],
+            "Windows SDK".encode_utf16().collect::<Vec<_>>()
+        );
+        set_text(app.draft_box, "Уточнить версию SDK для Windows 11.");
+        assert_eq!(String::from_utf16_lossy(&buffer(app.editor)), source);
+        assert_eq!(fs::read_to_string(&path)?, persisted);
+        app.command(REVIEW_CANCEL);
+        assert_eq!(fs::read_to_string(&path)?, persisted);
+        assert!(!visible(app.draft_box));
+
+        app.command(EDIT_REVIEW);
+        set_text(app.draft_box, "Уточнить версию SDK для Windows 11.");
+        app.message(
+            WM_COMMAND,
+            WPARAM(REVIEW_COMMIT),
+            LPARAM(app.draft_actions[0].0 as isize),
+        );
+        let saved = Markdown::parse(&fs::read_to_string(&path)?);
+        assert_eq!(saved.records.len(), 3);
+        assert_eq!(
+            saved.records[0].review.text,
+            "Уточнить версию SDK для Windows 11."
+        );
+        assert_eq!(saved.records[1].review.quote, "Ctrl+O");
+        assert!(!visible(app.draft_box));
+        app.command(READ);
+        assert!(!visible(app.review_actions[0]));
+        assert_eq!(app.mode(), 1);
+        app.command(EDITING);
+        assert_eq!(app.mode(), 3);
+
+        let origin = files.path().join("link origin.md");
+        let linked = files.path().join("Заметка #1.md");
+        fs::write(&linked, "# Начало\n\n## Нужный раздел\n\nDetails.\n")?;
+        let origin_text = "# Origin\r\n\r\n[Переход](Заметка%20%231.md#нужный-раздел)\r\n\r\n[Сбой](#missing)\r\n";
+        fs::write(&origin, origin_text)?;
+        app.open(origin.clone(), 1)?;
+        let link_position = index(&buffer(app.editor), "#нужный-раздел").start;
+        select(app.editor, link_position..link_position, false);
+        app.command(OPEN_LINK);
+        assert_eq!(
+            app.docs[app.active.unwrap()]
+                .path()
+                .and_then(Path::file_name),
+            linked.file_name()
+        );
+        assert_eq!(app.mode(), 1);
+        assert_eq!(
+            selection(app.editor).start,
+            index(&buffer(app.editor), "## Нужный раздел").start
+        );
+        let linked_index = app.active.unwrap();
+        let linked_id = app.docs[linked_index].id;
+        app.command(VIEW_RICH);
+        let heading = index(&buffer(app.editor), "Нужный раздел");
+        select(app.editor, heading.clone(), true);
+        app.command(BACK);
+        assert_eq!(
+            app.docs[app.active.unwrap()]
+                .path()
+                .and_then(Path::file_name),
+            origin.file_name()
+        );
+        assert_eq!(selection(app.editor).start, link_position);
+        assert_eq!(app.mode(), 1);
+        app.follow_at(index(&buffer(app.editor), "Сбой").start);
+        assert!(!app.history.available(false));
+        assert!(app.history.available(true));
+        app.close_tab(linked_index);
+        app.command(FORWARD_LINK);
+        assert_eq!(
+            app.docs[app.active.unwrap()]
+                .path()
+                .and_then(Path::file_name),
+            linked.file_name()
+        );
+        assert_ne!(app.docs[app.active.unwrap()].id, linked_id);
+        assert_eq!(app.mode(), 0);
+        assert_eq!(selection(app.editor), heading);
+        app.command(BACK);
+        assert_eq!(selection(app.editor).start, link_position);
+        assert_eq!(fs::read_to_string(&origin)?, origin_text);
+        app.follow_at(link_position);
+        assert!(!app.history.available(true));
+        fs::remove_file(&origin)?;
+        app.command(BACK);
+        assert_eq!(
+            app.active
+                .map(|i| app.docs[i].path().and_then(Path::file_name)),
+            Some(origin.file_name())
+        );
+        assert_eq!(selection(app.editor).start, link_position);
+
+        let lint_path = files.path().join("lint.md");
+        fs::write(&lint_path, "# Lint\n\n[Broken](#missing)\n")?;
+        app.open(lint_path.clone(), 0)?;
+        app.command(LINT_NEXT);
+        assert_eq!(
+            selection(app.editor).start,
+            index(&buffer(app.editor), "Broken").start
+        );
+        assert!(get_text(app.status).contains(tr(L::LintAnchorMissing)));
+        app.command(VIEW_SOURCE);
+        app.command(EDITING);
+        select(app.editor, index(&buffer(app.editor), "missing"), false);
+        send(app.editor, EM_REPLACESEL, 1, wide("lint").as_ptr() as isize);
+        app.message(
+            WM_COMMAND,
+            WPARAM(ID_DOCUMENT | ((EN_CHANGE as usize) << 16)),
+            LPARAM(app.editor.0 as isize),
+        );
+        app.command(LINT_NEXT);
+        assert_eq!(get_text(app.status), tr(L::LintClean));
+        let local = files.path().join("lint-local.md");
+        fs::write(
+            &local,
+            "# Lint\n\n[Missing document](no-file.md)\n\n[Missing image](no-image.png)\n",
+        )?;
+        app.open(local, 0)?;
+        app.command(LINT_PREV);
+        assert_eq!(
+            selection(app.editor).start,
+            index(&buffer(app.editor), "Missing image").start
+        );
+        app.command(LINT_PREV);
+        assert_eq!(
+            selection(app.editor).start,
+            index(&buffer(app.editor), "Missing document").start
+        );
+        app.command(VIEW_SOURCE);
+        app.jump_source(0);
+        app.command(LINT_NEXT);
+        assert_eq!(
+            selection(app.editor).start,
+            index(&buffer(app.editor), "[Missing document]").start
+        );
+        assert!(get_text(app.status).contains(tr(L::LintTargetMissing)));
+        assert_eq!(
+            fs::read_to_string(lint_path)?,
+            "# Lint\n\n[Broken](#missing)\n"
+        );
+
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn editor_appearance_updates_both_modes_without_changing_document_state() -> Result<()> {
+    use crate::desktop::theme::EditorFont;
+
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let files = tempfile::tempdir()?;
+        let path = files.path().join("Appearance.md");
+        let original = "# Заголовок\r\n\r\nText [Link](#заголовок) 😀\r\n";
+        fs::write(&path, original)?;
+        app.theme_choice = THEME_LIGHT;
+        app.theme();
+        app.open(path.clone(), 2)?;
+
+        select(app.editor, index(&buffer(app.editor), "Text"), false);
+        let replacement = wide("Текст");
+        send(app.editor, EM_REPLACESEL, 1, replacement.as_ptr() as isize);
+        app.message(
+            WM_COMMAND,
+            WPARAM(ID_DOCUMENT | ((EN_CHANGE as usize) << 16)),
+            LPARAM(app.editor.0 as isize),
+        );
+        let edited = original.replace("Text", "Текст");
+        let before = buffer(app.editor);
+        select(app.editor, index(&before, "Текст"), false);
+        let mut appearance = EditorAppearance {
+            rich: EditorFont::new("Tahoma".into(), 32).unwrap(),
+            source: EditorFont::new("Courier New".into(), 28).unwrap(),
+            ..EditorAppearance::default()
+        };
+        appearance.light.paper = Some(0xf6efd9);
+        appearance.light.ink = Some(0x353528);
+        appearance.light.link = Some(0x11592e);
+        app.apply_appearance(appearance);
+        assert_eq!(app.mode(), 2);
+        assert!(app.projection_safe);
+        assert_eq!(app.docs[0].text, edited);
+        assert_eq!(fs::read_to_string(&path)?, original);
+        assert_eq!(buffer(app.editor), before);
+        assert_eq!(selection(app.editor), index(&before, "Текст"));
+
+        let editor = app.editor;
+        let native_format = |value| {
+            select(editor, index(&buffer(editor), value), false);
+            let mut format = CHARFORMATW {
+                cbSize: size_of::<CHARFORMATW>() as u32,
+                ..Default::default()
+            };
+            send(
+                editor,
+                EM_GETCHARFORMAT,
+                SCF_SELECTION as usize,
+                (&mut format as *mut CHARFORMATW) as isize,
+            );
+            let end = format
+                .szFaceName
+                .iter()
+                .position(|&unit| unit == 0)
+                .unwrap();
+            (
+                String::from_utf16_lossy(&format.szFaceName[..end]),
+                format.yHeight,
+                format.crTextColor,
+            )
+        };
+        assert_eq!(
+            native_format("Текст"),
+            ("Tahoma".into(), 320, Palette::rgb(0x353528))
+        );
+        assert!(native_format("Заголовок").1 > 320);
+        assert_eq!(native_format("Link").2, Palette::rgb(0x11592e));
+        let background = Palette::rgb(0xf6efd9);
+        assert_eq!(
+            send(editor, EM_SETBKGNDCOLOR, 0, background.0 as isize),
+            background.0 as isize
+        );
+
+        app.command(VIEW_SOURCE);
+        assert_eq!(app.mode(), 3);
+        assert!(app.projection_safe);
+        assert_eq!(
+            native_format("Текст"),
+            ("Courier New".into(), 280, Palette::rgb(0x353528))
+        );
+        app.theme_choice = THEME_DARK;
+        app.theme();
+        app.refresh_viewport();
+        assert_eq!(
+            native_format("Текст").2,
+            Palette::rgb(Palette::new(true).text)
+        );
+        app.apply_appearance(EditorAppearance::default());
+        assert_eq!(native_format("Текст").0, "Consolas");
+        app.command(SAVE);
+        assert_eq!(fs::read_to_string(path)?, edited);
+
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn task_list_can_be_edited_and_saved_in_wysiwyg() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let files = tempfile::tempdir()?;
+        let path = files.path().join("Tasks.md");
+        let original = "Intro\r\n\r\n- [ ] **Task** 😀\r\n";
+        fs::write(&path, format!("\u{feff}{original}"))?;
+        app.open(path.clone(), 2)?;
+        let checkbox = index(&buffer(app.editor), "☐").start;
+        let left = char_point(app.editor, checkbox);
+        let right = char_point(app.editor, checkbox + 1);
+        assert_eq!(
+            app.task_hit(POINT {
+                x: (left.x + right.x) / 2,
+                y: left.y + 2
+            }),
+            Some(checkbox)
+        );
+        let state = RefCell::new(app);
+        SetWindowLongPtrW(
+            parent,
+            GWLP_USERDATA,
+            (&state as *const RefCell<App>) as isize,
+        );
+        let editor = state.borrow().editor;
+        let coordinates =
+            ((left.x + right.x) / 2) as u16 as isize | (((left.y + 2) as u16 as isize) << 16);
+        send(editor, WM_LBUTTONDOWN, 1, coordinates);
+        send(editor, WM_LBUTTONUP, 0, coordinates);
+        SetWindowLongPtrW(parent, GWLP_USERDATA, 0);
+        let mut app = state.into_inner();
+        let mut message = MSG::default();
+        assert!(PeekMessageW(&mut message, Some(parent), WM_TASK, WM_TASK, PM_REMOVE).as_bool());
+        app.message(message.message, message.wParam, message.lParam);
+        assert_eq!(app.docs[0].text, original.replace("[ ]", "[x]"));
+        assert!(String::from_utf16_lossy(&buffer(app.editor)).contains("☑"));
+        app.command(UNDO);
+        assert_eq!(app.docs[0].text, original);
+        app.command(REDO);
+        assert!(app.docs[0].text.contains("[x]"));
+        app.command(READ);
+        app.message(WM_TASK, WPARAM(checkbox), LPARAM(0));
+        assert!(app.docs[0].text.contains("[x]"));
+
+        app.command(EDITING);
+        let end = buffer(app.editor).len();
+        select(app.editor, end..end, false);
+        app.command(PARAGRAPH);
+        assert!(app.projection_safe);
+        assert_eq!(
+            app.docs[0].text,
+            "Intro\r\n\r\n- [x] **Task** 😀\r\n- [ ] \r\n"
+        );
+        assert_eq!(selection(app.editor).start, buffer(app.editor).len());
+        send(app.editor, EM_REPLACESEL, 1, wide("Next").as_ptr() as isize);
+        app.sync();
+        assert!(app.docs[0].text.contains("- [ ] Next"));
+        app.command(VIEW_SOURCE);
+        let at = index(&buffer(app.editor), "Next").start;
+        select(app.editor, at..at, false);
+        app.command(TOGGLE_TASK);
+        app.command(SAVE);
+        assert_eq!(
+            fs::read_to_string(&path)?,
+            "\u{feff}Intro\r\n\r\n- [x] **Task** 😀\r\n- [x] Next\r\n"
+        );
+
+        let next = files.path().join("Exit.md");
+        fs::write(&next, "Plain paragraph")?;
+        app.open(next.clone(), 2)?;
+        app.command(MAKE_TASK);
+        assert_eq!(app.docs[1].text, "- [ ] Plain paragraph");
+        let end = buffer(app.editor).len();
+        select(app.editor, end..end, false);
+        app.command(PARAGRAPH);
+        app.command(PARAGRAPH);
+        assert_eq!(app.docs[1].text, "- [ ] Plain paragraph\n\n");
+        assert!(app.projection_safe);
+        send(
+            app.editor,
+            EM_REPLACESEL,
+            1,
+            wide("Prose").as_ptr() as isize,
+        );
+        app.sync();
+        assert_eq!(app.docs[1].text, "- [ ] Plain paragraph\n\nProse");
+        app.command(SAVE);
+        assert_eq!(fs::read_to_string(next)?, "- [ ] Plain paragraph\n\nProse");
+
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn list_and_heading_commands_preserve_the_text_and_markup() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let files = tempfile::tempdir()?;
+        let path = files.path().join("Formats.md");
+        fs::write(&path, "Title\n\n- [x] **Left**Right\n")?;
+        app.open(path.clone(), 2)?;
+        for command in HEADING_FIRST..=HEADING_LAST {
+            app.command(command);
+            let level = command - HEADING_FIRST + 1;
+            assert_eq!(app.parsed.regions[0].level as usize, level);
+            assert!(
+                app.docs[0]
+                    .text
+                    .starts_with(&format!("{} Title\n", "#".repeat(level)))
+            );
+        }
+        app.command(HEADING_LAST);
+        assert!(app.docs[0].text.starts_with("Title\n"));
+
+        let point = index(&buffer(app.editor), "Title").end;
+        select(app.editor, point..point, false);
+        send(app.editor, EM_REPLACESEL, 1, wide("s").as_ptr() as isize);
+        app.sync();
+        assert!(app.docs[0].text.starts_with("Titles\n"));
+        let point = index(&buffer(app.editor), "Left").start;
+        select(app.editor, point..point, false);
+        app.command(TOGGLE_TASK);
+        assert!(app.docs[0].text.contains("- [ ] **Left**Right"));
+        app.command(NUMBERED_LIST);
+        assert!(app.docs[0].text.contains("1. [ ] **Left**Right"));
+        app.command(BULLET);
+        let point = index(&buffer(app.editor), "Right").start + 2;
+        select(app.editor, point..point, false);
+        app.command(LINE_BREAK);
+        assert!(app.projection_safe);
+        let rendered = String::from_utf16_lossy(&buffer(app.editor));
+        assert!(
+            rendered.contains("Ri\u{000b}ght"),
+            "source is {:?}, rendered {rendered:?}",
+            app.docs[0].text
+        );
+        app.command(SAVE);
+        assert_eq!(
+            fs::read_to_string(path)?,
+            "Titles\n\n- [ ] **Left**Ri  \n  ght\n"
+        );
+
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn visual_clipboard_text_can_span_lines_without_losing_a_task_marker() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let files = tempfile::tempdir()?;
+        let path = files.path().join("Paste.md");
+        fs::write(&path, "# Clipboard\r\n\r\n- [x] **old** text.\r\n")?;
+        app.open(path.clone(), 2)?;
+        select(app.editor, index(&buffer(app.editor), "old"), false);
+        app.paste_visual("First Ж😀\nSecond");
+        assert!(app.projection_safe);
+        assert!(String::from_utf16_lossy(&buffer(app.editor)).contains("First Ж😀\u{000b}Second"));
+        app.command(SAVE);
+        assert_eq!(
+            fs::read_to_string(path)?,
+            "# Clipboard\r\n\r\n- [x] **First Ж😀<br>Second** text.\r\n"
+        );
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn native_visual_replacement_and_delete_cross_paragraphs_without_losing_reviews() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let files = tempfile::tempdir()?;
+        let path = files.path().join("Review edit.md");
+        let review = "<!-- pane-md:review retain this record -->";
+        let original =
+            format!("Keep **bold** old\r\n\r\n{review}\r\n\r\nRemove tail\r\n\r\nAfter.\r\n");
+        fs::write(&path, &original)?;
+        app.open(path.clone(), 2)?;
+        let selection = |app: &App| {
+            let rendered = buffer(app.editor);
+            index(&rendered, " old").start..index(&rendered, "Remove ").end
+        };
+        select(app.editor, selection(&app), false);
+        send(app.editor, EM_REPLACESEL, 1, wide(" / ").as_ptr() as isize);
+        app.sync();
+        assert_eq!(app.parsed.regions[0].text, "Keep bold / tail");
+        assert_eq!(app.parsed.regions[1].text, "After.");
+        assert!(app.docs[0].text.contains(review));
+        app.command(UNDO);
+        assert_eq!(app.docs[0].text, original);
+        select(app.editor, selection(&app), false);
+        send(app.editor, EM_REPLACESEL, 1, wide("").as_ptr() as isize);
+        app.sync();
+        assert_eq!(app.parsed.regions[0].text, "Keep boldtail");
+        assert!(app.docs[0].text.contains(review));
+        app.command(UNDO);
+        app.command(SAVE);
+        assert_eq!(fs::read_to_string(path)?, original);
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn native_visual_replacement_keeps_list_markers_and_table_cells() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let files = tempfile::tempdir()?;
+        let path = files.path().join("Structured edit.md");
+        let original = "- [x] Keep **bold** old\r\n- [ ] Remove tail\r\n- [ ] After\r\n\r\n| Keep **old** and *more* tail | Other |\r\n| --- | --- |\r\n| First | Second |\r\n";
+        fs::write(&path, original)?;
+        app.open(path, 2)?;
+        let rendered = buffer(app.editor);
+        let span = index(&rendered, " old\r").start..index(&rendered, "Remove ").end;
+        select(app.editor, span, false);
+        send(app.editor, EM_REPLACESEL, 1, wide("X").as_ptr() as isize);
+        app.sync();
+        assert!(
+            app.docs[0]
+                .text
+                .starts_with("- [x] Keep **bold**Xtail\r\n- [ ] After")
+        );
+        app.command(UNDO);
+        assert_eq!(app.docs[0].text, original);
+
+        let rendered = buffer(app.editor);
+        select(app.editor, index(&rendered, "old and more"), false);
+        send(app.editor, EM_REPLACESEL, 1, wide("Z").as_ptr() as isize);
+        app.sync();
+        assert!(app.docs[0].text.contains("| Keep Z tail | Other |"));
+        app.command(UNDO);
+        assert_eq!(app.docs[0].text, original);
+
+        let rendered = buffer(app.editor);
+        let span = index(&rendered, "rst").start..index(&rendered, "Sec").end;
+        select(app.editor, span.clone(), false);
+        app.paste_visual(" / ");
+        assert!(
+            app.docs[0].text.contains("| &#32;/&#32; |  |"),
+            "{:?}",
+            app.docs[0].text
+        );
+        app.command(UNDO);
+        assert_eq!(app.docs[0].text, original);
+
+        let editor = app.editor;
+        let state = RefCell::new(app);
+        SetWindowLongPtrW(parent, GWLP_USERDATA, &raw const state as isize);
+        select(editor, span.clone(), false);
+        for unit in "😀".encode_utf16() {
+            send(editor, WM_CHAR, usize::from(unit), 0);
+        }
+        assert!(
+            state.borrow().docs[0].text.contains("| 😀 |  |"),
+            "{:?}",
+            state.borrow().docs[0].text
+        );
+        state.borrow_mut().command(UNDO);
+        assert_eq!(state.borrow().docs[0].text, original);
+
+        select(editor, span, false);
+        send(editor, WM_KEYDOWN, VK_DELETE.0.into(), 0);
+        assert!(
+            state.borrow().docs[0].text.contains("|  |  |"),
+            "{:?}",
+            state.borrow().docs[0].text
+        );
+        state.borrow_mut().command(UNDO);
+        assert_eq!(state.borrow().docs[0].text, original);
+        SetWindowLongPtrW(parent, GWLP_USERDATA, 0);
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn native_link_draft_edits_references_and_removes_links_after_live_typing() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let files = tempfile::tempdir()?;
+        let path = files.path().join("Links.md");
+        let original = "Lead\r\n\r\n[**Ref** and *more*][id] [Other][id].\r\n\r\n[id]: old.md \"Shared tip\"\r\n";
+        fs::write(&path, original)?;
+        app.open(path, 2)?;
+        let rendered = buffer(app.editor);
+        let lead = index(&rendered, "Lead").end;
+        select(app.editor, lead..lead, false);
+        send(app.editor, WM_CHAR, 'x' as usize, 1);
+        app.sync();
+        let rendered = buffer(app.editor);
+        let in_link = index(&rendered, "more").start;
+        select(app.editor, in_link..in_link, false);
+        app.command(LINK);
+        assert_eq!(get_text(app.draft_box), "old.md");
+        set_text(app.draft_box, "javascript:alert(1)");
+        app.command(REVIEW_SAVE);
+        assert!(app.draft.is_some());
+        set_text(app.draft_box, "new file.md");
+        app.command(REVIEW_SAVE);
+        assert!(app.draft.is_none());
+        let typed = original.replace("Lead", "Leadx");
+        let edited = typed.replace(
+            "[**Ref** and *more*][id]",
+            "[**Ref** and *more*](new%20file.md \"Shared tip\")",
+        );
+        assert_eq!(app.docs[0].text, edited);
+
+        let rendered = buffer(app.editor);
+        select(app.editor, index(&rendered, "Ref and more"), false);
+        app.command(LINK);
+        assert_eq!(get_text(app.draft_box), "new%20file.md");
+        set_text(app.draft_box, "");
+        app.command(REVIEW_SAVE);
+        assert_eq!(
+            app.docs[0].text,
+            typed.replace("[**Ref** and *more*][id]", "**Ref** and *more*")
+        );
+        app.command(UNDO);
+        assert_eq!(app.docs[0].text, edited);
+        app.command(UNDO);
+        assert_eq!(app.docs[0].text, typed);
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn native_table_navigation_focuses_sparse_cells_and_the_appended_row() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let files = tempfile::tempdir()?;
+        let path = files.path().join("Navigate table.md");
+        let original = "| A | B | C |\r\n| --- | --- | ---: |\r\n| x |\r\n\r\nAfter.\r\n";
+        fs::write(&path, original)?;
+        app.open(path, 2)?;
+        let pos = |app: &App, row, cell| {
+            let region = app
+                .parsed
+                .regions
+                .iter()
+                .position(|r| r.row == Some(row) && r.cell == Some(cell))
+                .unwrap();
+            let at = app.view.region[region].start;
+            at..at
+        };
+        select(app.editor, pos(&app, 0, 2), false);
+        assert!(app.move_table_cell(false));
+        assert_eq!(selection(app.editor), pos(&app, 1, 0));
+        assert!(app.move_table_cell(true));
+        assert_eq!(selection(app.editor), pos(&app, 0, 2));
+        for (row, col) in [(1, 0), (1, 1), (1, 2)] {
+            assert!(app.move_table_cell(false));
+            assert_eq!(selection(app.editor), pos(&app, row, col));
+        }
+        assert_eq!(app.docs[0].text, original);
+        assert!(app.move_table_cell(false));
+        assert_eq!(selection(app.editor), pos(&app, 2, 0));
+        assert!(app.docs[0].text.contains("| x |\r\n|   |   |   |"));
+        send(app.editor, WM_CHAR, 'Q' as usize, 1);
+        app.sync();
+        assert!(
+            app.docs[0].text.contains("|   Q|   |   |"),
+            "{:?}",
+            app.docs[0].text
+        );
+        app.command(UNDO);
+        app.command(UNDO);
+        assert_eq!(app.docs[0].text, original);
+        select(app.editor, pos(&app, 1, 1), false);
+        app.command(COL_ADD);
+        assert_eq!(selection(app.editor), pos(&app, 1, 2));
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn native_table_edits_materialize_implicit_cells_and_undo() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let files = tempfile::tempdir()?;
+        let path = files.path().join("Sparse table.md");
+        let original = "| A | B | C |\r\n| --- | --- | ---: |\r\n| x |\r\n\r\nAfter.\r\n";
+        fs::write(&path, original)?;
+        app.open(path.clone(), 2)?;
+        let blank = |app: &App, column: usize| {
+            let index = app
+                .parsed
+                .regions
+                .iter()
+                .position(|r| r.row == Some(1) && r.cell == Some(column))
+                .unwrap();
+            app.view.region[index].clone()
+        };
+        select(app.editor, blank(&app, 2), false);
+        send(app.editor, WM_CHAR, 'Ж' as usize, 1);
+        app.sync();
+        send(app.editor, WM_CHAR, 'a' as usize, 1);
+        app.sync();
+        assert!(
+            app.docs[0].text.contains("| x |   | Жa |"),
+            "{:?}",
+            app.docs[0].text
+        );
+        app.command(UNDO);
+        assert!(app.docs[0].text.contains("| x |   | Ж |"));
+        app.command(UNDO);
+        assert_eq!(app.docs[0].text, original);
+
+        select(app.editor, blank(&app, 1), false);
+        app.paste_visual("one|two");
+        send(app.editor, WM_CHAR, '!' as usize, 1);
+        app.sync();
+        assert!(
+            app.docs[0].text.contains("| x | one\\|two! |"),
+            "{:?}",
+            app.docs[0].text
+        );
+        app.command(UNDO);
+        app.command(UNDO);
+        assert_eq!(app.docs[0].text, original);
+
+        select(app.editor, blank(&app, 1), false);
+        app.command(COL_ADD);
+        assert!(app.docs[0].text.contains("| A | B |   | C |"));
+        assert!(app.docs[0].text.contains("\r\n| x |\r\n"));
+        app.command(UNDO);
+        app.command(SAVE);
+        assert_eq!(fs::read_to_string(path)?, original);
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn image_insertion_updates_the_editor_and_undo_preserves_the_copied_asset() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let work = tempfile::tempdir()?;
+        let external = tempfile::tempdir()?;
+        let document = work.path().join("Images.md");
+        let chosen = external.path().join("Figure #1.png");
+        let png = include_bytes!("../../../assets/pane-md.png");
+        let original = "Insert after this line\r\n\r\nKeep this line\r\n";
+        fs::write(&document, original)?;
+        fs::write(&chosen, png)?;
+        app.open(document.clone(), 2)?;
+        let position = index(&buffer(app.editor), "Insert").start;
+        select(app.editor, position..position, false);
+        app.insert_image(&chosen)?;
+        assert!(app.projection_safe);
+        assert!(buffer(app.editor).contains(&0xfffc));
+        app.command(SAVE);
+        assert_eq!(
+            fs::read_to_string(&document)?,
+            "Insert after this line\r\n\r\n![Figure #1](Figure%20%231.png)\r\n\r\nKeep this line\r\n"
+        );
+        app.command(UNDO);
+        app.command(SAVE);
+        assert_eq!(fs::read_to_string(&document)?, original);
+        assert_eq!(fs::read(work.path().join("Figure #1.png"))?, png);
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn remote_image_click_loads_into_native_editor() -> Result<()> {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        time::{Duration, Instant},
+    };
+
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(900)?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let url = format!("http://{}/remote.png", listener.local_addr()?);
+        let folder = tempfile::tempdir()?;
+        let path = folder.path().join("remote.md");
+        fs::write(&path, format!("![Remote]({url})"))?;
+        app.open(path, 0)?;
+        let caption = index(&buffer(app.editor), "Remote").start;
+        assert_eq!(
+            app.view.link(caption),
+            Some(format!("image:{url}").as_str())
+        );
+        assert!(!buffer(app.editor).contains(&0xfffc));
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        let server = std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(8);
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0; 1024];
+                        let _ = stream.read(&mut request).unwrap();
+                        let png = include_bytes!("../../../assets/pane-md.png");
+                        write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            png.len()
+                        )
+                        .unwrap();
+                        stream.write_all(png).unwrap();
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < until, "image request did not arrive");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("image server: {error}"),
+                }
+            }
+        });
+        app.follow_at(caption);
+        let until = Instant::now() + Duration::from_secs(8);
+        while !buffer(app.editor).contains(&0xfffc) {
+            let mut message = MSG::default();
+            if PeekMessageW(
+                &mut message,
+                Some(app.hwnd),
+                WM_DIAGRAM_READY,
+                WM_DIAGRAM_READY,
+                PM_REMOVE,
+            )
+            .as_bool()
+            {
+                app.message(message.message, message.wParam, message.lParam);
+            } else {
+                assert!(Instant::now() < until, "remote image did not appear");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        server.join().unwrap();
+        assert!(app.projection_safe);
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn markdown_replace_all_keeps_bom_records_and_undoes_as_one_edit() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let work = tempfile::tempdir()?;
+        let path = work.path().join("Replace.md");
+        let source = "\u{feff}Жук жук жуки\r\n\r\n<!-- pane-md:review Жук -->\r\n";
+        fs::write(&path, source)?;
+        app.open(path.clone(), 3)?;
+        app.command(SHOW_REPLACE);
+        assert!(app.replace_open);
+        set_text(app.find_box, "жук");
+        set_text(app.replace_box, "сова");
+        app.command(WHOLE_WORD);
+        app.command(REPLACE_ALL);
+        app.command(SAVE);
+        assert_eq!(
+            fs::read_to_string(&path)?,
+            "\u{feff}сова сова жуки\r\n\r\n<!-- pane-md:review Жук -->\r\n"
+        );
+        app.command(UNDO);
+        app.command(SAVE);
+        assert_eq!(fs::read_to_string(&path)?, source);
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn refreshing_folder_restores_expanded_directories_and_keeps_open_tabs() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1440)?;
+        let directory = tempfile::tempdir()?;
+        let notes = directory.path().join("notes");
+        fs::create_dir(&notes)?;
+        let original = notes.join("Plan.md");
+        let saved_as = notes.join("Copy.md");
+        fs::write(&original, "Plan\r\n")?;
+        app.open(directory.path().to_owned(), 0)?;
+        let child = app.tree_entries[1].item;
+        app.expand(child, 1);
+        send(app.tree, TVM_EXPAND, TVE_EXPAND.0 as usize, child.0);
+        app.open(original.clone(), 3)?;
+        app.docs[0].save_as(saved_as.clone())?;
+        app.open(saved_as.clone(), 0)?;
+        assert_eq!(app.docs.len(), 1);
+        app.patch(0..4, "Unsaved plan", 12);
+        fs::remove_file(original)?;
+        fs::write(notes.join("Next.MD"), "# Next\r\n")?;
+        fs::write(notes.join("image.png"), b"not a document")?;
+
+        app.command(REFRESH_FILES);
+
+        let by_name = |name| {
+            app.tree_entries
+                .iter()
+                .any(|entry| entry.path.ends_with(name))
+        };
+        assert!(by_name("Copy.md") && by_name("Next.MD"));
+        assert!(!by_name("Plan.md") && !by_name("image.png"));
+        assert_ne!(
+            send(
+                app.tree,
+                TVM_GETITEMSTATE,
+                app.tree_entries[1].item.0 as usize,
+                TVIS_EXPANDED.0 as isize
+            ),
+            0,
+        );
+        assert_eq!(app.active, Some(0));
+        assert!(app.docs[0].dirty());
+        assert_eq!(app.docs[0].text, "Unsaved plan\r\n");
+        assert_eq!(fs::read_to_string(saved_as)?, "Plan\r\n");
+        DestroyWindow(parent)?;
+        CoUninitialize();
+        Ok(())
+    }
+}
+
+#[test]
+fn new_note_accepts_rich_text_and_remains_editable_across_tabs() -> Result<()> {
+    unsafe {
+        let (_desktop, parent, mut app) = test_window(1000)?;
+        let folder = tempfile::tempdir()?;
+        app.command(NEW_NOTE);
+        assert_eq!(app.mode(), 2);
+        assert!(app.docs[0].path().is_none() && app.projection_safe);
+        let content = wide("First note");
+        send(app.editor, EM_REPLACESEL, 0, content.as_ptr() as isize);
+        app.sync();
+        assert_eq!(app.docs[0].text, "First note");
+        app.command(NEW_NOTE);
+        assert_eq!(app.active, Some(1));
+        assert_ne!(app.docs[1].name(), app.docs[0].name());
+        assert!(app.docs[1].text.is_empty());
+        app.switch(0);
+        assert_eq!(String::from_utf16_lossy(&buffer(app.editor)), "First note");
+        let path = folder.path().join("First note.md");
+        app.docs[0].save_as(path.clone())?;
+        app.open(path.clone(), 0)?;
+        assert_eq!(app.docs.len(), 2);
+        assert_eq!(app.active, Some(0));
+        assert_eq!(fs::read_to_string(path)?, "First note");
         DestroyWindow(parent)?;
         CoUninitialize();
         Ok(())
