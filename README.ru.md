@@ -75,6 +75,8 @@ pane-md --source --wait путь/к/документу.md
 pane-md --mcp
 ```
 
+На Windows для внешнего редактора по `Ctrl+G` задайте `VISUAL` и `EDITOR` путь к `pane-md-editor.exe` из архива. Он открывает исходник Markdown, ждёт закрытия окна и не создаёт окно терминала. Для команд CLI и MCP используйте `pane-md.exe`.
+
 MCP-сервер обменивается сообщениями через стандартный ввод и вывод; диагностика идёт в STDERR. Инструменты: `list_comments`, `lint_document` и, в графических сборках, `open_document`. Относительные пути считаются от рабочего каталога сервера. В конфигурации MCP для Codex CLI укажите абсолютный путь к EXE и `args = ["--mcp"]`.
 
 ## Участие и безопасность
@@ -82,3 +84,5 @@ MCP-сервер обменивается сообщениями через ст
 Перед pull request выполните `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings` и `cargo test --locked --all-targets`. Порядок работы описан в [CONTRIBUTING.md](.github/CONTRIBUTING.md), правила для агентов — в [AGENTS.md](AGENTS.md). Также есть [правила сообщества](.github/CODE_OF_CONDUCT.md) и [история изменений](docs/CHANGELOG.md). Об уязвимостях сообщайте приватно по [SECURITY.md](.github/SECURITY.md).
 
 В архивах есть уведомления и копии лицензий зависимостей. Исходный код pane-md и оригинальная иконка распространяются по [MIT](LICENSE).
+
+Значки в README, Windows, Linux и macOS создаются из `assets/pane-md.svg`. Обновить `pane-md.png` и `pane-md.ico` можно командой `cargo run --release --example generate_icon`.
