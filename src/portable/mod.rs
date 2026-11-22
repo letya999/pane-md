@@ -514,30 +514,28 @@ impl Workspace {
                     self.open(path, 0)?;
                 }
             }
-            Action::SelectTab { index } => {
-                if index < self.docs.len() {
-                    self.active = Some(index);
-                }
+            Action::SelectTab { index } if index < self.docs.len() => {
+                self.active = Some(index);
             }
-            Action::CloseTab { index } => {
-                if self.confirms(index, window)? {
-                    if self.wait {
-                        return Ok(true);
-                    }
-                    self.docs.remove(index);
-                    self.active = if self.docs.is_empty() {
-                        None
-                    } else {
-                        self.active.map(|active| {
-                            if active > index {
-                                active - 1
-                            } else {
-                                active.min(self.docs.len() - 1)
-                            }
-                        })
-                    };
+            Action::SelectTab { .. } => {}
+            Action::CloseTab { index } if self.confirms(index, window)? => {
+                if self.wait {
+                    return Ok(true);
                 }
+                self.docs.remove(index);
+                self.active = if self.docs.is_empty() {
+                    None
+                } else {
+                    self.active.map(|active| {
+                        if active > index {
+                            active - 1
+                        } else {
+                            active.min(self.docs.len() - 1)
+                        }
+                    })
+                };
             }
+            Action::CloseTab { .. } => {}
             Action::Family { source_view } => {
                 if let Some(doc) = self.active_doc() {
                     doc.mode = doc.mode & !1 | usize::from(source_view);

@@ -983,17 +983,16 @@ impl App {
                 self.refresh_outline();
                 self.layout();
             }
-            REVIEWS => {
-                if self.draft.is_none() {
-                    if self.active.is_some() && !self.show_review_marks() {
-                        self.review_open = true;
-                        self.change_mode(self.mode() % 2, true);
-                    } else {
-                        self.review_open = !self.review_open;
-                        self.layout();
-                    }
+            REVIEWS if self.draft.is_none() => {
+                if self.active.is_some() && !self.show_review_marks() {
+                    self.review_open = true;
+                    self.change_mode(self.mode() % 2, true);
+                } else {
+                    self.review_open = !self.review_open;
+                    self.layout();
                 }
             }
+            REVIEWS => {}
             ZOOM_IN | ZOOM_OUT | ZOOM_RESET => {
                 self.zoom = match command {
                     ZOOM_IN => (self.zoom + 10).min(250),
