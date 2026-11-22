@@ -68,7 +68,7 @@ open -a "$PWD/target/macos/pane-md.app" "$PWD/README.md"
 ## Проверка Markdown и чтение комментариев
 
 ```text
-pane-md --lint README.md PROMPT.md
+pane-md --lint README.md docs/original-prompt.ru.md
 pane-md --lint --json README.md
 pane-md --list-comments README.md
 ```

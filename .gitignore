@@ -1,6 +1,7 @@
 /target/
 /scripts/__pycache__/
 /.ruff_cache/
+/.repo-safety/
 /.env
 /.env.*
 !/.env.example

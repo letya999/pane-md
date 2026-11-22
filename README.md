@@ -8,6 +8,14 @@
 
 [![CI](https://github.com/letya999/pane-md/actions/workflows/ci.yml/badge.svg)](https://github.com/letya999/pane-md/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Rust 1.95+](https://img.shields.io/badge/Rust-1.95%2B-orange.svg)](Cargo.toml)
 
+## See it in action
+
+<p align="center"><img src="docs/media/tour.gif" width="960" alt="Animated tour: WYSIWYG with outline and review cards, Markdown source, and editing mode"></p>
+
+<p align="center"><a href="docs/media/01-wysiwyg.png"><img src="docs/media/01-wysiwyg.png" width="30%" alt="WYSIWYG with outline and comments"></a> <a href="docs/media/02-source.png"><img src="docs/media/02-source.png" width="30%" alt="Markdown source and comments"></a> <a href="docs/media/03-editing.png"><img src="docs/media/03-editing.png" width="30%" alt="Markdown editing mode"></a></p>
+
+These are screenshots of the Windows app using the included [review demo](examples/review-demo.md). Select a thumbnail for the full-size image. The animated image cycles through the three views.
+
 ## What it does
 
 - Opens files and folders in tabs, with a file explorer and collapsible outline.
@@ -71,6 +79,6 @@ The MCP server uses standard input and output; diagnostic messages go to standar
 
 ## Contributing and security
 
-Run `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked --all-targets` before a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), the [code of conduct](CODE_OF_CONDUCT.md), and the [changelog](CHANGELOG.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Run `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked --all-targets` before a pull request. See [CONTRIBUTING.md](.github/CONTRIBUTING.md), [AGENTS.md](AGENTS.md), the [code of conduct](.github/CODE_OF_CONDUCT.md), and the [changelog](docs/CHANGELOG.md). Report vulnerabilities privately as described in [SECURITY.md](.github/SECURITY.md).
 
 Released packages include dependency notices and license copies. The pane-md source code and original icon are licensed under [MIT](LICENSE).

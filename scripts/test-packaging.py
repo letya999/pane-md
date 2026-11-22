@@ -13,7 +13,7 @@ release_notes = run_path(str(ROOT / "scripts" / "release-notes.py"))["release_no
 
 class PackagingTests(unittest.TestCase):
     def test_release_notes_select_one_version_and_require_changes(self):
-        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        changelog = (ROOT / "docs/CHANGELOG.md").read_text(encoding="utf-8")
         first = release_notes("v0.1.0", changelog)
         latest = release_notes("v0.1.1", changelog)
         self.assertIn("STDIO MCP server", first)

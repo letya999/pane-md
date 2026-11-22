@@ -8,6 +8,14 @@
 
 [![CI](https://github.com/letya999/pane-md/actions/workflows/ci.yml/badge.svg)](https://github.com/letya999/pane-md/actions/workflows/ci.yml) [![Лицензия MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Rust 1.95+](https://img.shields.io/badge/Rust-1.95%2B-orange.svg)](Cargo.toml)
 
+## Как выглядит приложение
+
+<p align="center"><img src="docs/media/tour.gif" width="960" alt="Смена трёх видов: WYSIWYG с оглавлением и комментариями, исходный Markdown и режим редактирования"></p>
+
+<p align="center"><a href="docs/media/01-wysiwyg.png"><img src="docs/media/01-wysiwyg.png" width="30%" alt="WYSIWYG с оглавлением и комментариями"></a> <a href="docs/media/02-source.png"><img src="docs/media/02-source.png" width="30%" alt="Исходный Markdown с комментариями"></a> <a href="docs/media/03-editing.png"><img src="docs/media/03-editing.png" width="30%" alt="Редактирование Markdown"></a></p>
+
+Это реальные кадры Windows-приложения с [демонстрационным документом](examples/review-demo.md). Нажмите на миниатюру, чтобы открыть полный размер. GIF по очереди показывает все три состояния.
+
 ## Возможности
 
 - Открывает файлы и папки во вкладках; есть проводник и сворачиваемое оглавление.
@@ -71,6 +79,6 @@ MCP-сервер обменивается сообщениями через ст
 
 ## Участие и безопасность
 
-Перед pull request выполните `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings` и `cargo test --locked --all-targets`. Порядок работы описан в [CONTRIBUTING.md](CONTRIBUTING.md), правила для агентов — в [AGENTS.md](AGENTS.md). Также есть [правила сообщества](CODE_OF_CONDUCT.md) и [история изменений](CHANGELOG.md). Об уязвимостях сообщайте приватно по [SECURITY.md](SECURITY.md).
+Перед pull request выполните `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings` и `cargo test --locked --all-targets`. Порядок работы описан в [CONTRIBUTING.md](.github/CONTRIBUTING.md), правила для агентов — в [AGENTS.md](AGENTS.md). Также есть [правила сообщества](.github/CODE_OF_CONDUCT.md) и [история изменений](docs/CHANGELOG.md). Об уязвимостях сообщайте приватно по [SECURITY.md](.github/SECURITY.md).
 
 В архивах есть уведомления и копии лицензий зависимостей. Исходный код pane-md и оригинальная иконка распространяются по [MIT](LICENSE).

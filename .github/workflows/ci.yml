@@ -18,13 +18,13 @@ jobs:
   version:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Check tracked files and MCP configuration
         run: |
-          python3 .repo-safety/scripts/forbid_sensitive_files.py --all
-          python3 .repo-safety/scripts/scan_mcp_config.py
+          python3 scripts/security/forbid_sensitive_files.py --all
+          python3 scripts/security/scan_mcp_config.py
       - name: Check release tag against Cargo.toml
         if: github.ref_type == 'tag'
         run: |
@@ -59,10 +59,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       - name: Install Rust 1.95
@@ -119,12 +119,22 @@ jobs:
       - name: Build and package macOS universal app
         if: runner.os == 'macOS'
         run: python scripts/package-macos.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pane-md-${{ matrix.artifact }}
           path: ${{ matrix.archive }}
           if-no-files-found: error
           retention-days: 14
+
+  ci-pass:
+    if: always()
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all checks to pass
+        run: |
+          test '${{ needs.version.result }}' = success
+          test '${{ needs.build.result }}' = success
 
   release:
     if: github.ref_type == 'tag'
@@ -133,10 +143,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: pane-md-*
           path: dist

@@ -29,8 +29,8 @@ fn main() {
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
     {
         let directory = std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory");
-        let manifest = std::path::PathBuf::from(directory).join("windows.manifest");
-        println!("cargo:rerun-if-changed=windows.manifest");
+        let manifest = std::path::PathBuf::from(directory).join("assets/windows.manifest");
+        println!("cargo:rerun-if-changed=assets/windows.manifest");
         println!("cargo:rustc-link-arg-bin=pane-md=/MANIFEST:EMBED");
         println!(
             "cargo:rustc-link-arg-bin=pane-md=/MANIFESTINPUT:{}",

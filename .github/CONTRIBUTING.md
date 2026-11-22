@@ -23,16 +23,16 @@ cargo test --locked --all-targets
 python scripts/test-packaging.py
 ```
 
-The CI matrix runs on Windows, Linux, and macOS. Browser component checks run on Linux. The Windows GUI smoke script and Linux X11 smoke script are documented in the [detailed guide](docs/guide.ru.md). Run the relevant one when changing window behavior. A macOS build check does not replace a manual GUI test on a Mac.
+The CI matrix runs on Windows, Linux, and macOS. Browser component checks run on Linux. The Windows GUI smoke script and Linux X11 smoke script are documented in the [detailed guide](../docs/guide.ru.md). Run the relevant one when changing window behavior. A macOS build check does not replace a manual GUI test on a Mac.
 
-Before tagging a release, update the version in `Cargo.toml` and add a matching `## X.Y.Z` section to [CHANGELOG.md](CHANGELOG.md). CI checks the tag, builds all three archives, and uses that section as the GitHub Release description.
+Before tagging a release, update the version in `Cargo.toml` and add a matching `## X.Y.Z` section to [CHANGELOG.md](../docs/CHANGELOG.md). CI checks the tag, builds all three archives, and uses that section as the GitHub Release description.
 
 ## Pull requests
 
 - Describe the user-visible change, the affected platform, and how you verified it.
 - Include a regression test for a behavior change that could corrupt files, comments, links, or MCP output.
-- Keep [README.md](README.md) and [README.ru.md](README.ru.md) consistent when changing documented behavior.
+- Keep [README.md](../README.md) and [README.ru.md](../README.ru.md) consistent when changing documented behavior.
 - Preserve existing Markdown bytes and review anchors where possible. Explain intentional format migrations.
 - Do not commit real documents, tokens, machine-specific paths, generated build files, or secrets.
 
-The project uses the [MIT License](LICENSE). By submitting a contribution, you agree to license it under MIT.
+The project uses the [MIT License](../LICENSE). By submitting a contribution, you agree to license it under MIT.

@@ -31,6 +31,6 @@ if __name__ == "__main__":
     if len(sys.argv) != 2 or not sys.argv[1].startswith("v"):
         raise SystemExit("Usage: release-notes.py vX.Y.Z")
     try:
-        print(release_notes(sys.argv[1], (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")))
+        print(release_notes(sys.argv[1], (ROOT / "docs/CHANGELOG.md").read_text(encoding="utf-8")))
     except ValueError as error:
         raise SystemExit(str(error)) from error
