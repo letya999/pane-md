@@ -156,8 +156,8 @@ impl Markdown {
                     {
                         return None;
                     }
-                } else if !item.plain_paragraph()
-                    && !(item.kind == "heading" && item.indent == 0 && !item.quote)
+                } else if !(item.plain_paragraph()
+                    || item.kind == "heading" && item.indent == 0 && !item.quote)
                     && !(item.kind == "list"
                         && item.level == 0
                         && !item.quote
