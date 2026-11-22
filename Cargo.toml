@@ -45,7 +45,7 @@ rfd = { version = "0.18", optional = true, default-features = false }
 base64 = "0.23"
 imagesize = "0.15"
 tempfile = "3"
-ureq = { version = "=3.5.0", default-features = false, features = ["rustls"] }
+ureq = { version = "=3.5.2", default-features = false, features = ["rustls"] }
 merman = { version = "0.11.0", features = ["math", "system-timing"] }
 resvg = { version = "0.50", default-features = false, features = ["system-fonts", "text"] }
 uuid = { version = "1", features = ["v4"] }
