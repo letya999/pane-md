@@ -75,6 +75,8 @@ pane-md --source --wait path/to/document.md
 pane-md --mcp
 ```
 
+On Windows, set `VISUAL` and `EDITOR` to the bundled `pane-md-editor.exe` for external-editor shortcuts such as `Ctrl+G`. It opens pane-md in source edit mode, waits for the window to close, and does not create a terminal window. Use `pane-md.exe` for CLI and MCP commands.
+
 The MCP server uses standard input and output; diagnostic messages go to standard error. It offers `list_comments`, `lint_document`, and, in GUI builds, `open_document`. Relative paths are resolved from the server's working directory. A Codex CLI MCP entry can use the absolute executable path with `args = ["--mcp"]`.
 
 ## Contributing and security
@@ -82,3 +84,5 @@ The MCP server uses standard input and output; diagnostic messages go to standar
 Run `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked --all-targets` before a pull request. See [CONTRIBUTING.md](.github/CONTRIBUTING.md), [AGENTS.md](AGENTS.md), the [code of conduct](.github/CODE_OF_CONDUCT.md), and the [changelog](docs/CHANGELOG.md). Report vulnerabilities privately as described in [SECURITY.md](.github/SECURITY.md).
 
 Released packages include dependency notices and license copies. The pane-md source code and original icon are licensed under [MIT](LICENSE).
+
+The README, Windows, Linux, and macOS icons come from `assets/pane-md.svg`. Regenerate `pane-md.png` and `pane-md.ico` with `cargo run --release --example generate_icon`.

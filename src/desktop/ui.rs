@@ -238,12 +238,17 @@ unsafe fn run_window(path: Option<PathBuf>, wait: bool) -> Result<()> {
             (&*state as *const RefCell<App>) as isize,
         );
         let _ = ShowWindow(hwnd, SW_SHOW);
-        // A terminal host can request SW_HIDE for the console-subsystem launcher.
-        if !IsWindowVisible(hwnd).as_bool() {
+        // The launcher can pass a minimized show state on the first ShowWindow call.
+        if wait && IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        } else if !IsWindowVisible(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_SHOW);
         }
         let _ = UpdateWindow(hwnd);
         if state.borrow().active.is_some() {
+            if wait {
+                let _ = SetForegroundWindow(hwnd);
+            }
             let _ = SetFocus(Some(state.borrow().editor));
         }
         let mut msg = MSG::default();

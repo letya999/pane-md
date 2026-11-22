@@ -20,7 +20,7 @@ fn main() {
         let path =
             std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("pane-md.rc");
         std::fs::write(&path, resource).expect("write Windows version resource");
-        embed_resource::compile_for(path, ["pane-md"], embed_resource::NONE)
+        embed_resource::compile_for(path, ["pane-md", "pane-md-editor"], embed_resource::NONE)
             .manifest_optional()
             .expect("embed the Windows app icon");
     }

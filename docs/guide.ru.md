@@ -144,12 +144,13 @@ pane-md --list-comments README.md
 Задайте `VISUAL` в том PowerShell, из которого запускаете Codex CLI. `Ctrl+G` в поле набора открывает временный промпт. Сохраните и закройте окно редактора, чтобы вернуть правку в поле набора. [Документация Codex CLI](https://learn.chatgpt.com/docs/cli-customization#prompt-editor)
 
 ```powershell
-$exe = (Resolve-Path .\target\release\pane-md.exe).Path
-$env:VISUAL = '"' + $exe + '" --source --wait'
+$editor = (Resolve-Path .\target\release\pane-md-editor.exe).Path
+$env:VISUAL = $editor
+$env:EDITOR = $editor
 codex
 ```
 
-Режим `--source --wait` проверен с правкой, сохранением и чтением того же пути для `.txt` и файла без расширения. Сквозная проверка клавиши `Ctrl+G` в установленном Codex CLI 0.170.0 осталась неполной. Автоматизированная консоль не запустила редактор по этой клавише.
+`pane-md-editor.exe` запускает `pane-md.exe --source --wait` без дополнительного окна терминала. Проверены правка, сохранение и ожидание закрытия для временного файла без расширения, а также запуск по `Ctrl+G` из Devin CLI на Windows.
 
 ## MCP
 
