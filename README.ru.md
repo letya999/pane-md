@@ -10,9 +10,9 @@
 
 ## Как выглядит приложение
 
-<p align="center"><img src="docs/media/tour.gif" width="960" alt="Смена трёх видов: WYSIWYG с оглавлением и комментариями, исходный Markdown и режим редактирования"></p>
+<p align="center"><img src="docs/media/tour.gif" width="960" alt="Смена трёх видов: WYSIWYG с оглавлением и комментариями, исходный Markdown и редактирование комментария"></p>
 
-<p align="center"><a href="docs/media/01-wysiwyg.png"><img src="docs/media/01-wysiwyg.png" width="30%" alt="WYSIWYG с оглавлением и комментариями"></a> <a href="docs/media/02-source.png"><img src="docs/media/02-source.png" width="30%" alt="Исходный Markdown с комментариями"></a> <a href="docs/media/03-editing.png"><img src="docs/media/03-editing.png" width="30%" alt="Редактирование Markdown"></a></p>
+<p align="center"><a href="docs/media/01-wysiwyg.png"><img src="docs/media/01-wysiwyg.png" width="30%" alt="WYSIWYG с оглавлением и комментариями"></a> <a href="docs/media/02-source.png"><img src="docs/media/02-source.png" width="30%" alt="Исходный Markdown с комментариями"></a> <a href="docs/media/03-comment-edit.png"><img src="docs/media/03-comment-edit.png" width="30%" alt="Редактирование комментария в исходном Markdown"></a></p>
 
 Это реальные кадры Windows-приложения с [демонстрационным документом](examples/review-demo.md). Нажмите на миниатюру, чтобы открыть полный размер. GIF по очереди показывает все три состояния.
 

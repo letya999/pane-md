@@ -77,5 +77,9 @@ Invoke-CommandId 172 # Hide outline.
 Invoke-CommandId 188 # Markdown source.
 Save-Frame '02-source.png'
 Invoke-CommandId 178 # Editing with comments.
-Save-Frame '03-editing.png'
+Invoke-CommandId 400 # Select the first visible review card.
+Invoke-CommandId 119 # Edit that comment.
+Save-Frame '03-comment-edit.png'
+Invoke-CommandId 124 # Discard the unchanged demo draft.
 $window.CloseMainWindow() | Out-Null
+$window.WaitForExit(5000) | Out-Null

@@ -10,9 +10,9 @@
 
 ## See it in action
 
-<p align="center"><img src="docs/media/tour.gif" width="960" alt="Animated tour: WYSIWYG with outline and review cards, Markdown source, and editing mode"></p>
+<p align="center"><img src="docs/media/tour.gif" width="960" alt="Animated tour: WYSIWYG with outline and review cards, Markdown source, and editing a comment"></p>
 
-<p align="center"><a href="docs/media/01-wysiwyg.png"><img src="docs/media/01-wysiwyg.png" width="30%" alt="WYSIWYG with outline and comments"></a> <a href="docs/media/02-source.png"><img src="docs/media/02-source.png" width="30%" alt="Markdown source and comments"></a> <a href="docs/media/03-editing.png"><img src="docs/media/03-editing.png" width="30%" alt="Markdown editing mode"></a></p>
+<p align="center"><a href="docs/media/01-wysiwyg.png"><img src="docs/media/01-wysiwyg.png" width="30%" alt="WYSIWYG with outline and comments"></a> <a href="docs/media/02-source.png"><img src="docs/media/02-source.png" width="30%" alt="Markdown source and comments"></a> <a href="docs/media/03-comment-edit.png"><img src="docs/media/03-comment-edit.png" width="30%" alt="Editing a review comment in Markdown source mode"></a></p>
 
 These are screenshots of the Windows app using the included [review demo](examples/review-demo.md). Select a thumbnail for the full-size image. The animated image cycles through the three views.
 
