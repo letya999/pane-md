@@ -25,6 +25,8 @@ python scripts/test-packaging.py
 
 The CI matrix runs on Windows, Linux, and macOS. Browser component checks run on Linux. The Windows GUI smoke script and Linux X11 smoke script are documented in the [detailed guide](docs/guide.ru.md). Run the relevant one when changing window behavior. A macOS build check does not replace a manual GUI test on a Mac.
 
+Before tagging a release, update the version in `Cargo.toml` and add a matching `## X.Y.Z` section to [CHANGELOG.md](CHANGELOG.md). CI checks the tag, builds all three archives, and uses that section as the GitHub Release description.
+
 ## Pull requests
 
 - Describe the user-visible change, the affected platform, and how you verified it.

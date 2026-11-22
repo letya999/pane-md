@@ -8,8 +8,20 @@ import unittest
 
 from release_files import ROOT, license_files
 
+release_notes = run_path(str(ROOT / "scripts" / "release-notes.py"))["release_notes"]
+
 
 class PackagingTests(unittest.TestCase):
+    def test_release_notes_select_one_version_and_require_changes(self):
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        first = release_notes("v0.1.0", changelog)
+        latest = release_notes("v0.1.1", changelog)
+        self.assertIn("STDIO MCP server", first)
+        self.assertNotIn("Windows Explorer version details", first)
+        self.assertIn("Windows Explorer version details", latest)
+        with self.assertRaises(ValueError):
+            release_notes("v9.9.9", changelog)
+
     def test_mac_bundle_layout_and_markdown_association(self):
         package = run_path(str(ROOT / "scripts" / "package-macos.py"))
         with tempfile.TemporaryDirectory() as folder:
