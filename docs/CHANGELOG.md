@@ -2,6 +2,12 @@
 
 This file records user-visible changes in released versions.
 
+## 0.1.2 — 2026-11-22
+
+- Unified the app icon as a large MD mark across the README and desktop bundles.
+- Added a Windows per-user installer that registers pane-md for Markdown files and makes it available in Default apps and Open with.
+- Added a GUI file launcher, so Explorer and external editor shortcuts open pane-md without an extra terminal window.
+
 ## 0.1.1 — 2026-11-22
 
 - Added Windows Explorer version details and a Linux application menu launcher.

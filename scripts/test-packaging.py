@@ -15,10 +15,11 @@ class PackagingTests(unittest.TestCase):
     def test_release_notes_select_one_version_and_require_changes(self):
         changelog = (ROOT / "docs/CHANGELOG.md").read_text(encoding="utf-8")
         first = release_notes("v0.1.0", changelog)
-        latest = release_notes("v0.1.1", changelog)
+        latest = release_notes("v0.1.2", changelog)
         self.assertIn("STDIO MCP server", first)
         self.assertNotIn("Windows Explorer version details", first)
-        self.assertIn("Windows Explorer version details", latest)
+        self.assertIn("Default apps", latest)
+        self.assertNotIn("Windows Explorer version details", latest)
         with self.assertRaises(ValueError):
             release_notes("v9.9.9", changelog)
 

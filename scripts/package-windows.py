@@ -20,6 +20,7 @@ def main():
     release = target_dir / "release"
     executable = release / "pane-md.exe"
     editor = release / "pane-md-editor.exe"
+    installer = Path(__file__).with_name("install-windows.ps1")
     archive = release / "pane-md-windows-x64.zip"
     if not executable.is_file() or not editor.is_file():
         raise SystemExit("Run cargo build --release --locked for x86_64-pc-windows-msvc first.")
@@ -30,6 +31,7 @@ def main():
         with zipfile.ZipFile(pending, "w", zipfile.ZIP_DEFLATED, strict_timestamps=False) as zipped:
             zipped.write(executable, executable.name)
             zipped.write(editor, editor.name)
+            zipped.write(installer, installer.name)
             for name, file in files.items():
                 zipped.write(file, name)
             zipped.writestr("THIRD-PARTY.txt", notices)
